@@ -1,0 +1,6 @@
+# 忽略 Binaries 目录
+Binaries/
+# 忽略所有 .log 文件
+*.log
+# 忽略 Intermediate 目录
+Intermediate/
