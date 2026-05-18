@@ -5,7 +5,6 @@
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "GameFramework/Actor.h"
-#include "InstancedStruct.h" 
 #include "Engine/DataTable.h"
 #include "UDSTCoreFunctionLibrary.generated.h"
 
@@ -38,18 +37,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UDST|String Process")
 	static FString RemoveLastSuffix(const FString& InputString);
 
-	//DataTable
-	UFUNCTION(BlueprintCallable, Category = "UDST|DataTable")
-	static bool GetDataTableRowAsInstancedStruct(
-		UDataTable* Table,
-		FName RowName,
-		FInstancedStruct& OutRow);   // ← 标准 UFUNCTION，无需 CustomThunk
-
-	UFUNCTION(BlueprintCallable, Category = "UDST|DataTable")
-	static int32 GetDataTableAllRowsAsInstancedStruct(
-		UDataTable* Table,
-		TArray<FInstancedStruct>& OutRows);
-
+	
 	//控制渲染质量
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Quality")
 	static void SetRenderQuality(

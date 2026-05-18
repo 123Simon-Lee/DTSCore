@@ -30,8 +30,7 @@ public class DTSCore : ModuleRules
 				"Puerts",
                 "EnhancedInput",
 				"InputCore",
-                "UMG",
-                "StructUtils"
+                "UMG"
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);

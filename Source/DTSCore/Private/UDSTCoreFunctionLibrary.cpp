@@ -189,69 +189,7 @@ FString UUDSTCoreFunctionLibrary::RemoveLastSuffix(const FString& InputString)
     return CleanString.Left(DashIndices[3]);
 }
 
-/// <summary>
-/// // 假设 DataTable 已在蓝图或构造函数里赋值
-//UDataTable* FloorTable = ...;
-//
-//// ── 单行查询 ──────────────────────────────────────────
-//FInstancedStruct OutRow;
-//bool bFound = UUDSTCoreFunctionLibrary::GetDataTableRowAsInstancedStruct(
-//    FloorTable, FName("Floor_01"), OutRow);
-//
-//if (bFound && OutRow.IsValid())
-//{
-//    // GetPtr<T> 返回 const T*，类型不匹配时返回 nullptr
-//    if (const FBuildingFloorConfig* Config = OutRow.GetPtr<FBuildingFloorConfig>())
-//    {
-//        UE_LOG(LogTemp, Log, TEXT("BuildingID: %s, FloorCount: %d, FloorHeight: %.2f"),
-//            *Config->BuildingID, Config->FloorCount, Config->FloorHeight);
-//    }
-//}
-//
-//// ── 全量查询 ──────────────────────────────────────────
-//TArray<FInstancedStruct> AllRows;
-//int32 Count = UUDSTCoreFunctionLibrary::GetDataTableAllRowsAsInstancedStruct(
-//    FloorTable, AllRows);
-//
-//for (const FInstancedStruct& Row : AllRows)
-//{
-//    if (const FBuildingFloorConfig* Config = Row.GetPtr<FBuildingFloorConfig>())
-//    {
-//        UE_LOG(LogTemp, Log, TEXT("BuildingID: %s"), *Config->BuildingID);
-//    }
-//}
-/// </summary>
-/// <param name="Table"></param>
-/// <param name="RowName"></param>
-/// <param name="OutRow"></param>
-/// <returns></returns>
-bool UUDSTCoreFunctionLibrary::GetDataTableRowAsInstancedStruct(
-    UDataTable* Table, FName RowName, FInstancedStruct& OutRow)
-{
-    if (!Table) return false;
 
-    UScriptStruct* RowStruct = const_cast<UScriptStruct*>(Table->GetRowStruct()); // ← const_cast
-    uint8* RowData = Table->FindRowUnchecked(RowName);
-    if (!RowData) return false;
-
-    OutRow.InitializeAs(RowStruct, RowData);
-    return true;
-}
-
-int32 UUDSTCoreFunctionLibrary::GetDataTableAllRowsAsInstancedStruct(
-    UDataTable* Table, TArray<FInstancedStruct>& OutRows)
-{
-    if (!Table) return 0;
-    OutRows.Empty();
-
-    UScriptStruct* RowStruct = const_cast<UScriptStruct*>(Table->GetRowStruct()); // ← const_cast
-    for (auto& Pair : Table->GetRowMap())
-    {
-        FInstancedStruct& Entry = OutRows.AddDefaulted_GetRef();
-        Entry.InitializeAs(RowStruct, Pair.Value);
-    }
-    return OutRows.Num();
-}
 static int32 ClampQualityLevel(int32 Val)
 {
     return FMath::Clamp(Val, 0, 3);
