@@ -68,6 +68,17 @@ private:
     float LastSwitchTime = -999.f;
     float SwitchCooldown = 0.15f;
 
+    // 切换过程四元数旋转缓存
+    FQuat RotQuatCache;
+    // 目前是否已经拥有四元数缓存
+    bool bHasRotQuat = false;
+    // 四元数路径反向时间
+    double QuatPathReverseTime = 0.f;
+    // 新的四元数插值参数计算值
+    double QuatLerp;
+    // 插值过程四元数的变化值
+    FQuat DeltaQuat;
+
 
     void StartBlend(APawn* NewPawn);
     void UpdateBlend(float DeltaTime);

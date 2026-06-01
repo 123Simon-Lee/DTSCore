@@ -30,6 +30,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "TsEvent")
 	void CallTs(FString FunctionName, UObject* uobj);
 
+	UFUNCTION(BlueprintCallable, Category = "HostSetting")
+	FString GetBackendHost();
+
 private:
 	TSharedPtr<puerts::FJsEnv>GameScript;
+
+	// 后端地址存储,默认为本机
+	UPROPERTY()
+	FString BackendHost = TEXT("127.0.0.1");
 };

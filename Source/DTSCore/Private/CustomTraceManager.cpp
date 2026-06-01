@@ -10,6 +10,7 @@ void UCustomTraceManager::Initialize(FSubsystemCollectionBase& Collection)
 void UCustomTraceManager::Deinitialize()
 {
     Entries.Empty();
+    DynamicHandleMap.Empty();
     Super::Deinitialize();
 }
 
@@ -27,12 +28,10 @@ void UCustomTraceManager::RegisterChannel(ECollisionChannel Channel, FTraceDetec
     FTraceChannelEntry& Entry = Entries.FindOrAdd(Channel);
     if (DetectFunc.IsBound())
     {
-        // 使用调用方传入的自定义检测函数
         Entry.DetectFunc = MoveTemp(DetectFunc);
     }
     else
     {
-        // 未传入则绑定内置默认检测，捕获 Channel 值
         Entry.DetectFunc = FTraceDetectFunc::CreateLambda(
             [Channel](APlayerController* PC) -> AActor*
             {
@@ -46,9 +45,8 @@ void UCustomTraceManager::UnregisterChannel(ECollisionChannel Channel)
 {
     if (FTraceChannelEntry* Entry = Entries.Find(Channel))
     {
-        // 注销前若有命中Actor，广播一次离开事件，让订阅者有机会清理状态
         if (Entry->CurrentHitActor)
-            Entry->OnHitChanged.Broadcast(/*NewHit=*/nullptr, /*OldHit=*/Entry->CurrentHitActor);
+            Entry->OnHitChanged.Broadcast(nullptr, Entry->CurrentHitActor);
         Entries.Remove(Channel);
     }
 }
@@ -73,8 +71,71 @@ AActor* UCustomTraceManager::GetCurrentHit(ECollisionChannel Channel) const
     return nullptr;
 }
 
+// ── Puerts / 蓝图包装实现 ────────────────────────────────
+
+void UCustomTraceManager::BP_RegisterChannel(ECollisionChannel Channel)
+{
+    RegisterChannel(Channel);
+}
+
+void UCustomTraceManager::BP_UnregisterChannel(ECollisionChannel Channel)
+{
+    // 同时清理该通道下所有动态句柄记录，防止悬空
+    TArray<int32> ToRemove;
+    for (auto& Pair : DynamicHandleMap)
+    {
+        if (Pair.Value.Get<0>() == Channel)
+            ToRemove.Add(Pair.Key);
+    }
+    for (int32 Id : ToRemove)
+        DynamicHandleMap.Remove(Id);
+
+    UnregisterChannel(Channel);
+}
+
+int32 UCustomTraceManager::BP_Subscribe(
+    ECollisionChannel Channel, const FOnTraceHitChangedDynamic& Delegate)
+{
+    // 拷贝委托以在 Lambda 中捕获
+    FOnTraceHitChangedDynamic DelegateCopy = Delegate;
+
+    FDelegateHandle Handle = Subscribe(Channel,
+        FOnTraceHitChanged::FDelegate::CreateLambda(
+            [DelegateCopy](AActor* NewHit, AActor* OldHit)
+            {
+                if (DelegateCopy.IsBound())
+                    DelegateCopy.Execute(NewHit, OldHit);
+            }
+        )
+    );
+
+    int32 Id = NextSubscribeId++;
+    DynamicHandleMap.Add(Id, MakeTuple(Channel, Handle));
+    return Id;
+}
+
+void UCustomTraceManager::BP_Unsubscribe(ECollisionChannel Channel, int32 SubscribeId)
+{
+    if (TTuple<ECollisionChannel, FDelegateHandle>* Found = DynamicHandleMap.Find(SubscribeId))
+    {
+        Unsubscribe(Found->Get<0>(), Found->Get<1>());
+        DynamicHandleMap.Remove(SubscribeId);
+    }
+}
+
+AActor* UCustomTraceManager::BP_GetCurrentHit(ECollisionChannel Channel) const
+{
+    return GetCurrentHit(Channel);
+}
+
+// ── Tick ────────────────────────────────────────────────
+
 void UCustomTraceManager::Tick(float DeltaTime)
 {
+    // 不需要每帧都检测，16ms间隔足够
+    AccumulatedTime += DeltaTime;
+    if (AccumulatedTime < 0.016f) return;
+    AccumulatedTime = 0.f;
     UGameInstance* GI = GetGameInstance();
     if (!GI) return;
     UWorld* World = GI->GetWorld();
@@ -82,15 +143,12 @@ void UCustomTraceManager::Tick(float DeltaTime)
     APlayerController* PC = World->GetFirstPlayerController();
     if (!PC) return;
 
-    // 遍历所有已注册通道，逐一执行检测
     for (auto& Pair : Entries)
     {
         FTraceChannelEntry& Entry = Pair.Value;
         if (!Entry.DetectFunc.IsBound()) continue;
 
         AActor* NewHit = Entry.DetectFunc.Execute(PC);
-
-        // 命中Actor发生变化时才广播，避免每帧无意义广播
         if (NewHit != Entry.CurrentHitActor)
         {
             AActor* OldHit = Entry.CurrentHitActor;
@@ -102,7 +160,6 @@ void UCustomTraceManager::Tick(float DeltaTime)
 
 AActor* UCustomTraceManager::DefaultDetect(APlayerController* PC, ECollisionChannel Channel)
 {
-    // 将鼠标屏幕坐标转换为世界空间射线
     FVector WorldLocation, WorldDirection;
     if (!PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
         return nullptr;
@@ -111,17 +168,11 @@ AActor* UCustomTraceManager::DefaultDetect(APlayerController* PC, ECollisionChan
 
     FHitResult HitResult;
     FCollisionQueryParams Params;
-    // 忽略玩家自身Pawn，避免射线被自身遮挡
     Params.AddIgnoredActor(PC->GetPawn());
-    // 启用复杂碰撞检测，兼容没有简单碰撞体的Mesh 如果不需要把它注释掉
     Params.bTraceComplex = true;
 
     bool bHit = PC->GetWorld()->LineTraceSingleByChannel(
-        HitResult,
-        WorldLocation,
-        TraceEnd,
-        Channel,
-        Params
+        HitResult, WorldLocation, TraceEnd, Channel, Params
     );
 
     return bHit ? HitResult.GetActor() : nullptr;

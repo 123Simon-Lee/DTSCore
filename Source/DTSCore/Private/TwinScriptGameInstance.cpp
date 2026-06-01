@@ -25,6 +25,38 @@ void UTwinScriptGameInstance::Init()
 	TArray<TPair<FString, UObject*>> Arguments;
 	Arguments.Add(TPair<FString, UObject*>(TEXT("GameInstance"), this)); 
 	GameScript->Start("MainGame", Arguments);
+
+	// 尝试获取Content/Config/HostSetting.json
+	FString HostSettingPath = FPaths::ProjectContentDir() + TEXT("Config/HostSetting.json");
+	if (FPaths::FileExists(HostSettingPath))
+	{
+		// 读取内容Json
+		FString Content;
+		FFileHelper::LoadFileToString(Content,*HostSettingPath);
+		
+		// 创建一个Json对象
+		TSharedPtr<FJsonObject> JsonObject;
+		// 创建一个Json 阅读器
+		TSharedRef<TJsonReader<>> JsonReader = TJsonReaderFactory<TCHAR>::Create(Content);
+		// 尝试解析Json
+		if (FJsonSerializer::Deserialize(JsonReader,JsonObject))
+		{
+			// 获取BackendHost字段
+			if (JsonObject->HasField(TEXT("BackendHost")))
+			{
+				this->BackendHost = JsonObject->GetStringField(TEXT("BackendHost"));
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("BackendHost not found"));
+			}
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("HostSetting.json not found"));
+	}
+
 }
 
 void UTwinScriptGameInstance::OnStart()
@@ -41,4 +73,9 @@ void UTwinScriptGameInstance::Shutdown()
 void UTwinScriptGameInstance::CallTs(FString FunctionName, UObject* uobj)
 {
 
+}
+
+FString UTwinScriptGameInstance::GetBackendHost()
+{
+	return this->BackendHost;
 }

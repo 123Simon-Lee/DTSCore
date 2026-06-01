@@ -174,6 +174,10 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Drawer 模式|运行时计算")
     bool bLayeringRunning = false;
 
+    /** 楼层展开收起动画是否正在播放 */
+    UPROPERTY(BlueprintReadOnly, Category = "Drawer 模式|运行时计算")
+    bool bExpandRunning = false;
+    
     /** Drawer 模式下所有楼层的 TH Actor 列表，Key=楼层号 */
     UPROPERTY()
     TMap<int32, FFloorTHList> FloorTHMap;
@@ -216,6 +220,7 @@ public:
     /** 从 DataTable 配置行初始化组件参数 */
     UFUNCTION(BlueprintCallable, Category = "通用|方法")
     void InitFromConfig( const FBuildingFloorConfig& Config);
+    
     /** 解析 DataSmithActor 子层级，填充 FloorMap / FloorHeightMap 等所有数据，使用前必须调用一次 */
     UFUNCTION(BlueprintCallable, Category = "通用|方法")
     void ParseFloors();

@@ -58,7 +58,8 @@ void UBuildingFloorComponent::TickComponent(float DeltaTime, ELevelTick TickType
 
 int32 UBuildingFloorComponent::ParseFloorFromName(const FString& Name)
 {
-    FRegexPattern Pattern(TEXT("^(B?\\d+)F$"));
+    FRegexPattern Pattern(TEXT("^(B?\\d+|R)F$"));
+
     FRegexMatcher Matcher(Pattern, Name);
 
     if (Matcher.FindNext())
@@ -66,6 +67,9 @@ int32 UBuildingFloorComponent::ParseFloorFromName(const FString& Name)
         FString FloorStr = Matcher.GetCaptureGroup(1);
         if (FloorStr.StartsWith(TEXT("B")))
             return -FCString::Atoi(*FloorStr.RightChop(1));
+        // TODO:临时处理
+        else if (FloorStr.StartsWith(TEXT("R")))
+            return 4;
         else
             return FCString::Atoi(*FloorStr);
     }
@@ -731,7 +735,7 @@ void UBuildingFloorComponent::ToggleFloor(int32 Floor)
 
         TargetOffsetMap[ActiveFloor] = WorldDir * Distance;
     }
-
+    bExpandRunning = true;
     FloorExpandTimeline.PlayFromStart();
 }
 
@@ -958,6 +962,7 @@ void UBuildingFloorComponent::OnFloorExpandUpdate(float Value)
 
 void UBuildingFloorComponent::OnFloorExpandFinish()
 {
+    bExpandRunning = false;
     OnFloorExpandTimelineFinished.Broadcast();
 }
 
@@ -1005,6 +1010,7 @@ void UBuildingFloorComponent::ForceReset()
     LayeringTimeline.Stop();
     FloorExpandTimeline.Stop();
     bLayeringRunning = false;
+    bExpandRunning = false;
     ActiveFloor = 0;
 
     if (bIsLayering)
