@@ -73,26 +73,14 @@ float UUDSTCoreFunctionLibrary::GetActorsHeight(const TArray<AActor*>& Actors)
 
 bool UUDSTCoreFunctionLibrary::ReadConfigString(const FString& Section, const FString& Key, const FString& ConfigFilePath, FString& OutValue)
 {
-    // 检查文件是否存在
-    if (!FPaths::FileExists(ConfigFilePath))
+    if (ConfigFilePath.IsEmpty() || Section.IsEmpty() || Key.IsEmpty())
     {
-        UE_LOG(LogTemp, Error, TEXT("Config file not found: %s"), *ConfigFilePath);
         return false;
     }
 
-    // 创建并加载INI文件
-    FConfigFile ConfigFile;
-    ConfigFile.Read(ConfigFilePath);
-
-    // 读取字符串值
-    if (ConfigFile.GetString(*Section, *Key, OutValue))
-    {
-        return true;
-    }
-
-    UE_LOG(LogTemp, Warning, TEXT("Failed to read string value [%s] %s from config file %s"),
-        *Section, *Key, *ConfigFilePath);
-    return false;
+    // 每次读前 LoadFile 确保拿到磁盘最新值
+    GConfig->LoadFile(ConfigFilePath);
+    return GConfig->GetString(*Section, *Key, OutValue, ConfigFilePath);
 }
 
 FString UUDSTCoreFunctionLibrary::SetResolutionFromIni(const FString& IniFilePath)
@@ -264,4 +252,19 @@ void UUDSTCoreFunctionLibrary::ApplyPerformanceSettings()
     {
         UKismetSystemLibrary::ExecuteConsoleCommand(World, Cmd, PC);
     }
+}
+
+bool UUDSTCoreFunctionLibrary::WriteConfigString(const FString& Section, const FString& Key, const FString& Value, const FString& ConfigFilePath)
+{
+    if (ConfigFilePath.IsEmpty() || Section.IsEmpty() || Key.IsEmpty())
+    {
+        return false;
+    }
+
+    // 移除旧缓存，确保下次读取从磁盘重新加载
+    GConfig->RemoveKey(*Section, *Key, ConfigFilePath);
+
+    GConfig->SetString(*Section, *Key, *Value, ConfigFilePath);
+    GConfig->Flush(false, ConfigFilePath);
+    return true;
 }

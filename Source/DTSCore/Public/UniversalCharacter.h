@@ -74,7 +74,7 @@ public:
 
     // ===== 模式 =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    ECameraMode CameraMode = ECameraMode::ThirdPerson;
+    ECameraMode CameraMode = ECameraMode::FirstPerson;
 
     // ===== 参数 =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite)

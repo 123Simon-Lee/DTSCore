@@ -62,4 +62,7 @@ public:
 	//控制阴影系数 使用控制台命令行
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Performance")
 	static void ApplyPerformanceSettings();
+
+	UFUNCTION(BlueprintCallable, Category = "UDST|Config")
+	static bool WriteConfigString(const FString& Section, const FString& Key, const FString& Value, const FString& ConfigFilePath);
 };

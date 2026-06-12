@@ -63,6 +63,7 @@ public:
     bool CanUseWASD() const;
     bool CanRightMousePan() const;
     bool CanLeftMouseRotate() const;
+    bool CanZoom() const;
 
     // ===== Input =====
     UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Input action")

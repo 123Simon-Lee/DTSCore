@@ -150,6 +150,11 @@ bool ATwinSpectatorPawn::CanLeftMouseRotate() const
     return true;
 }
 
+bool ATwinSpectatorPawn::CanZoom() const
+{
+    return CameraControlMode == ECameraControlMode::BirdsEye;
+}
+
 // ===== 输入绑定 =====
 void ATwinSpectatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
@@ -337,6 +342,7 @@ void ATwinSpectatorPawn::WASDMoveStop(const FInputActionValue&)
 // ===== 缩放 =====
 void ATwinSpectatorPawn::Zoom(const FInputActionValue& Value)
 {
+    if (!CanZoom()) return;  //点位定位的时候禁用滚轮  
     ZoomVelocity += Value.Get<float>() * ZoomSpeed;
 }
 
