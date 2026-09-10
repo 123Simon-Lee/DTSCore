@@ -1,7 +1,7 @@
-{
+﻿{
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.0",
+	"VersionName": "3.0",
 	"FriendlyName": "DTSCore",
 	"Description": "",
 	"Category": "Other",
@@ -15,6 +15,11 @@
 	"IsExperimentalVersion": false,
 	"Installed": false,
 	"Modules": [
+		{
+			"Name": "SpaceSystemUnit",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
 		{
 			"Name": "DTSCore",
 			"Type": "Runtime",

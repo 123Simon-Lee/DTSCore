@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -7,6 +7,11 @@ public class DTSCore : ModuleRules
 	public DTSCore(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+
+		// 相机运行时配置必须以原始文本方式随包发布，才能在程序运行期间修改并保留文件里的注释。
+		RuntimeDependencies.Add(
+            "$(ProjectDir)/Content/Softwareconfig.ini",
+			StagedFileType.NonUFS);
 		
 		PublicIncludePaths.AddRange(
 			new string[] {
@@ -43,6 +48,7 @@ public class DTSCore : ModuleRules
 			{
 				"CoreUObject",
 				"Engine",
+				"SpaceSystemUnit",
 				"Slate",
 				"SlateCore",
 				// ... add private dependencies that you statically link with here ...	
