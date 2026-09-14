@@ -11,6 +11,7 @@
 
 namespace
 {
+  constexpr int32 RoofFloorIndex = 9999;
   /**
    * 楼层动画移动 RuntimeActor 时，附加在它下面的 Datasmith Actor 也会跟随移动。
    * Mobility 不会从父 Actor 继承，因此要在动画开始前将整棵附加层级设为 Movable。
@@ -463,10 +464,32 @@ bool UBuildingFloorComponent::MatchesActorNameRule(
 
   const FString Label = Actor->GetActorNameOrLabel();
   const FString ObjectName = Actor->GetName();
+
+  /*
+   * 分段精确匹配：按 '_' 拆分后任一段完全等于 MatchString。
+   * 覆盖 GZZL_RF_TH_001 这类命名，规则即使配置为 Equals("TH") 也能命中，
+   * 且不会像 segment 前后缀匹配那样误伤 MONTH 等包含 TH 的单词段。
+   */
+  auto MatchesSegmentEquals = [&Rule](const FString &Value)
+  {
+    TArray<FString> Segments;
+    Value.ParseIntoArray(Segments, TEXT("_"), true);
+    for (const FString &Segment : Segments)
+    {
+      if (Segment.Equals(Rule.MatchString, ESearchCase::IgnoreCase))
+      {
+        return true;
+      }
+    }
+    return false;
+  };
+
   return MatchesValue(Label) ||
          MatchesValue(RemoveNumericSuffix(Label)) ||
          MatchesValue(ObjectName) ||
-         MatchesValue(RemoveNumericSuffix(ObjectName));
+         MatchesValue(RemoveNumericSuffix(ObjectName)) ||
+         MatchesSegmentEquals(Label) ||
+         MatchesSegmentEquals(ObjectName);
 }
 
 void UBuildingFloorComponent::SetNamedActorsHidden(
@@ -495,7 +518,10 @@ void UBuildingFloorComponent::RestoreAllFloorCeilings()
   for (const TPair<int32, TArray<TWeakObjectPtr<AActor>>> &Pair :
        FloorCeilingActorMap)
   {
-    SetNamedActorsHidden(FloorCeilingActorMap, Pair.Key, false);
+    SetNamedActorsHidden(
+        FloorCeilingActorMap,
+        Pair.Key,
+        false);
   }
 }
 
@@ -1238,7 +1264,6 @@ void UBuildingFloorComponent::EnterLiftDropDisassemble()
 
   RestoreAllFloorCeilings();
 }
-
 bool UBuildingFloorComponent::SelectLiftDropFloor(
     int32 TargetFloor)
 {
@@ -1247,7 +1272,8 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
     return false;
   }
 
-  UBuildingRuntimeNode *TargetNode = FindFloorWithIndex(TargetFloor);
+  UBuildingRuntimeNode *TargetNode =
+      FindFloorWithIndex(TargetFloor);
 
   if (!TargetNode ||
       !TargetNode->RuntimeActor ||
@@ -1256,17 +1282,33 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
     return false;
   }
 
-  // 重复选择当前楼层时不做处理。
   if (ActiveFloor == TargetFloor)
   {
     return false;
   }
 
-  const int32 PreviousFloor = ActiveFloor;
+  int32 PreviousFloor = ActiveFloor;
 
-  const bool bFirstSelection = PreviousFloor == BUILDING_INVALID_FLOOR_INDEX;
+  const bool bFirstSelection =
+      PreviousFloor == BUILDING_INVALID_FLOOR_INDEX;
 
-  const bool bMovingToHigherFloor = bFirstSelection || TargetFloor > PreviousFloor;
+  if (bFirstSelection)
+  {
+    UBuildingRuntimeNode *HighestFloorNode =
+        GetHighestFloorNode();
+
+    if (!HighestFloorNode)
+    {
+      return false;
+    }
+
+    PreviousFloor =
+        HighestFloorNode->FloorIndex;
+  }
+
+  const bool bMovingToHigherFloor =
+      bFirstSelection ||
+      TargetFloor > PreviousFloor;
 
   LiftDropTimeline.Stop();
 
@@ -1274,18 +1316,22 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
   LiftDropTargetLocationMap.Empty();
   LiftDropHideOnFinished.Empty();
 
-  const float DropStartHeight = BuildingRuntimeData.Config.LiftDrop.DropStartHeight;
+  const float DropStartHeight =
+      BuildingRuntimeData.Config.LiftDrop.DropStartHeight;
 
-  const float LiftOutHeight = BuildingRuntimeData.Config.LiftDrop.LiftOutHeight;
+  const float LiftOutHeight =
+      BuildingRuntimeData.Config.LiftDrop.LiftOutHeight;
 
   if (bMovingToHigherFloor)
   {
     /*
-     * 例如第一次选择 6F，或者从 3F 切到 6F：
+     * 切换到更高楼层。
      *
-     * 1～5F：显示并保持原位
-     * 6F：从高处落回原位
-     * 7F以上：隐藏
+     * 例如：
+     * -1 → 9999
+     * 3 → 9999
+     *
+     * 目标层从高处向下落，不再对 9999 做向上抬升处理。
      */
     LiftDropTransition =
         ELiftDropTransition::DropIn;
@@ -1300,31 +1346,47 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
         continue;
       }
 
-      const int32 FloorIndex = Node->FloorIndex;
+      const int32 FloorIndex =
+          Node->FloorIndex;
 
-      const FVector OriginalLocation = Node->OriginalTransform.GetLocation();
+      const FVector OriginalLocation =
+          Node->OriginalTransform.GetLocation();
 
-      Node->CurrentOffset = FVector::ZeroVector;
+      Node->CurrentOffset =
+          FVector::ZeroVector;
 
-      Node->TargetOffset = FVector::ZeroVector;
+      Node->TargetOffset =
+          FVector::ZeroVector;
 
       if (FloorIndex < TargetFloor)
       {
-        // 目标层以下：显示、原位、不播放动画。
-        Node->RuntimeActor->SetActorLocation(OriginalLocation);
+        // 目标层以下直接显示并保持原位。
+        Node->RuntimeActor->SetActorLocation(
+            OriginalLocation);
 
-        ApplyFloorVisibility(FloorIndex, true);
+        Node->CurrentTransform =
+            Node->RuntimeActor->GetActorTransform();
+
+        ApplyFloorVisibility(
+            FloorIndex,
+            true);
       }
       else if (FloorIndex == TargetFloor)
       {
+        /*
+         * 包括 TargetFloor == 9999。
+         * 目标楼层从高处向下落回原位。
+         */
         const FVector StartLocation =
             OriginalLocation +
             FVector::UpVector *
                 DropStartHeight;
 
-        // 先设置到高处，再显示，避免闪一下原始位置。
         Node->RuntimeActor->SetActorLocation(
             StartLocation);
+
+        Node->CurrentTransform =
+            Node->RuntimeActor->GetActorTransform();
 
         ApplyFloorVisibility(
             FloorIndex,
@@ -1340,24 +1402,29 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
       }
       else
       {
-        // 目标楼层以上全部隐藏并重置到原位。
+        // 目标楼层以上保持隐藏。
         ApplyFloorVisibility(
             FloorIndex,
             false);
 
         Node->RuntimeActor->SetActorLocation(
             OriginalLocation);
+
+        Node->CurrentTransform =
+            Node->RuntimeActor->GetActorTransform();
       }
     }
   }
   else
   {
     /*
-     * 例如从 6F 切换到 3F：
+     * 切换到更低楼层。
      *
-     * 1～3F：显示并保持原位
-     * 4～6F：向上抬升，动画完成后隐藏
-     * 7F以上：继续隐藏
+     * 例如：
+     * 9999 → 3
+     * 3 → -1
+     *
+     * 上方楼层向上抬升并在动画完成后隐藏。
      */
     LiftDropTransition =
         ELiftDropTransition::LiftOut;
@@ -1386,9 +1453,12 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
 
       if (FloorIndex <= TargetFloor)
       {
-        // 新目标楼层及以下保持显示和原位。
+        // 新目标楼层以及以下楼层保持显示。
         Node->RuntimeActor->SetActorLocation(
             OriginalLocation);
+
+        Node->CurrentTransform =
+            Node->RuntimeActor->GetActorTransform();
 
         ApplyFloorVisibility(
             FloorIndex,
@@ -1396,10 +1466,6 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
       }
       else if (FloorIndex <= PreviousFloor)
       {
-        /*
-         * 这些是上一次还显示、现在需要退出的楼层。
-         * 从原位向上抬升，结束后再隐藏。
-         */
         const FVector LiftTargetLocation =
             OriginalLocation +
             FVector::UpVector *
@@ -1408,9 +1474,20 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
         Node->RuntimeActor->SetActorLocation(
             OriginalLocation);
 
+        Node->CurrentTransform =
+            Node->RuntimeActor->GetActorTransform();
+
         ApplyFloorVisibility(
             FloorIndex,
             true);
+
+        // 屋面层参与正常抬升，但 TH 只隐藏，不再单独播放位移动画。
+        if (FloorIndex == RoofFloorIndex)
+        {
+          SetFloorCeilingHidden(
+              RoofFloorIndex,
+              true);
+        }
 
         LiftDropStartLocationMap.Add(
             Node,
@@ -1424,24 +1501,26 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
       }
       else
       {
-        // 原来就隐藏的更高楼层继续保持隐藏。
+        // 原本就隐藏的更高楼层继续隐藏。
         ApplyFloorVisibility(
             FloorIndex,
             false);
 
         Node->RuntimeActor->SetActorLocation(
             OriginalLocation);
+
+        Node->CurrentTransform =
+            Node->RuntimeActor->GetActorTransform();
       }
     }
   }
 
   ActiveFloor = TargetFloor;
 
-  if (BuildingRuntimeData.Config.Name
-          .bHideCurrentFloorCeiling)
+  // 屋面 TH 始终隐藏；普通楼层继续使用配置决定是否隐藏当前层 TH。
+  if (TargetFloor == RoofFloorIndex ||
+      BuildingRuntimeData.Config.Name.bHideCurrentFloorCeiling)
   {
-    RestoreAllFloorCeilings();
-
     SetFloorCeilingHidden(
         TargetFloor,
         true);
@@ -1451,6 +1530,7 @@ bool UBuildingFloorComponent::SelectLiftDropFloor(
 
   return true;
 }
+
 void UBuildingFloorComponent::ExitLiftDropDisassemble()
 {
   LiftDropTimeline.Stop();
@@ -1846,7 +1926,9 @@ void UBuildingFloorComponent::PlayLiftDropTimeline()
 
 void UBuildingFloorComponent::OnLiftDropUpdate(float Alpha)
 {
-  for (const TPair<UBuildingRuntimeNode *, FVector> &Pair : LiftDropStartLocationMap)
+  // 普通楼层 RuntimeActor 动画。
+  for (const TPair<UBuildingRuntimeNode *, FVector> &Pair :
+       LiftDropStartLocationMap)
   {
     UBuildingRuntimeNode *Node = Pair.Key;
 
@@ -1855,49 +1937,63 @@ void UBuildingFloorComponent::OnLiftDropUpdate(float Alpha)
       continue;
     }
 
-    const FVector *TargetLocation = LiftDropTargetLocationMap.Find(Node);
+    const FVector *TargetLocation =
+        LiftDropTargetLocationMap.Find(Node);
 
     if (!TargetLocation)
     {
       continue;
     }
 
-    const FVector NewLocation = FMath::Lerp(Pair.Value, *TargetLocation, Alpha);
+    const FVector NewLocation =
+        FMath::Lerp(
+            Pair.Value,
+            *TargetLocation,
+            Alpha);
 
-    Node->RuntimeActor->SetActorLocation(NewLocation);
+    Node->RuntimeActor->SetActorLocation(
+        NewLocation);
 
-    Node->CurrentOffset = NewLocation - Node->OriginalTransform.GetLocation();
+    Node->CurrentOffset =
+        NewLocation -
+        Node->OriginalTransform.GetLocation();
 
-    Node->CurrentTransform = Node->RuntimeActor->GetActorTransform();
+    Node->CurrentTransform =
+        Node->RuntimeActor->GetActorTransform();
   }
 }
 
 void UBuildingFloorComponent::OnLiftDropFinished()
 {
-  /*
-   * 向下切换楼层时，把已经抬升出去的楼层隐藏，
-   * 并在隐藏状态下重置到原始位置。
-   */
-  for (UBuildingRuntimeNode *Node : LiftDropHideOnFinished)
+  // 隐藏已经抬升出去的楼层，并在隐藏状态下恢复原位置。
+  for (UBuildingRuntimeNode *Node :
+       LiftDropHideOnFinished)
   {
     if (!Node || !Node->RuntimeActor)
     {
       continue;
     }
 
-    ApplyFloorVisibility(Node->FloorIndex, false);
+    ApplyFloorVisibility(
+        Node->FloorIndex,
+        false);
 
-    Node->RuntimeActor->SetActorLocation(Node->OriginalTransform.GetLocation());
+    Node->RuntimeActor->SetActorLocation(
+        Node->OriginalTransform.GetLocation());
 
-    Node->CurrentTransform = Node->OriginalTransform;
+    Node->CurrentTransform =
+        Node->OriginalTransform;
 
-    Node->CurrentOffset = FVector::ZeroVector;
+    Node->CurrentOffset =
+        FVector::ZeroVector;
 
-    Node->TargetOffset = FVector::ZeroVector;
+    Node->TargetOffset =
+        FVector::ZeroVector;
   }
 
-  // 掉落楼层落地后也清空偏移状态。
-  for (const TPair<UBuildingRuntimeNode *, FVector> &Pair : LiftDropTargetLocationMap)
+  // 普通掉落楼层最终回到准确目标位置。
+  for (const TPair<UBuildingRuntimeNode *, FVector> &Pair :
+       LiftDropTargetLocationMap)
   {
     UBuildingRuntimeNode *Node = Pair.Key;
 
@@ -1908,23 +2004,28 @@ void UBuildingFloorComponent::OnLiftDropFinished()
 
     if (!LiftDropHideOnFinished.Contains(Node))
     {
-      Node->RuntimeActor->SetActorLocation(Pair.Value);
+      Node->RuntimeActor->SetActorLocation(
+          Pair.Value);
 
-      Node->CurrentTransform = Node->RuntimeActor->GetActorTransform();
+      Node->CurrentTransform =
+          Node->RuntimeActor->GetActorTransform();
 
-      Node->CurrentOffset = FVector::ZeroVector;
+      Node->CurrentOffset =
+          FVector::ZeroVector;
 
-      Node->TargetOffset = FVector::ZeroVector;
+      Node->TargetOffset =
+          FVector::ZeroVector;
     }
   }
 
   bLiftDropRunning = false;
-  LiftDropTransition = ELiftDropTransition::None;
+
+  LiftDropTransition =
+      ELiftDropTransition::None;
 
   LiftDropStartLocationMap.Empty();
   LiftDropTargetLocationMap.Empty();
   LiftDropHideOnFinished.Empty();
-
   OnFloorExpandTimelineFinished.Broadcast();
 
   if (!bLayeringRunning &&
@@ -2054,6 +2155,14 @@ void UBuildingFloorComponent::ApplyFloorVisibility(int32 Floor, bool bVisible)
   }
 
   ApplyNodeVisibility(Node, bVisible);
+  /*
+   * 楼层显示时恢复该层TH；
+   * 楼层隐藏时同步隐藏该层TH。
+   *
+   * 这样即使TH不在Space的OrdinaryActors中，
+   * 也会通过FloorCeilingActorMap进行控制。
+   */
+  SetFloorCeilingHidden(Floor, !bVisible);
 
   if (bVisible)
   {
@@ -2266,26 +2375,37 @@ UBuildingRuntimeNode *UBuildingFloorComponent::FindNodeWithActor(
 
 void UBuildingFloorComponent::Reset()
 {
-  if (!BuildingRuntimeData.Root)
-  {
-    return;
-  }
-
   LayeringTimeline.Stop();
   FloorExpandTimeline.Stop();
+  LiftDropTimeline.Stop();
 
   bDrawerRunning = false;
   bVisibilityRunning = false;
   bIsLayering = false;
   bLayeringRunning = false;
   bExpandRunning = false;
+  bLiftDropRunning = false;
 
-  ActiveFloor = BUILDING_INVALID_FLOOR_INDEX;
+  LiftDropTransition =
+      ELiftDropTransition::None;
+
+  ActiveFloor =
+      BUILDING_INVALID_FLOOR_INDEX;
 
   LayeredBaseLocationMap.Empty();
   ExpandStartOffsetMap.Empty();
   HiddenFloors.Empty();
+
+  LiftDropStartLocationMap.Empty();
+  LiftDropTargetLocationMap.Empty();
+  LiftDropHideOnFinished.Empty();
+
   SetComponentTickEnabled(false);
+
+  if (!BuildingRuntimeData.Root)
+  {
+    return;
+  }
 
   BuildingRuntimeData.Root->ForEachNode(
       [](UBuildingRuntimeNode *Node)
@@ -2295,19 +2415,29 @@ void UBuildingFloorComponent::Reset()
           return;
         }
 
-        Node->CurrentOffset = FVector::ZeroVector;
-        Node->TargetOffset = FVector::ZeroVector;
+        Node->CurrentOffset =
+            FVector::ZeroVector;
+
+        Node->TargetOffset =
+            FVector::ZeroVector;
+
         Node->bExpanded = false;
         Node->bHidden = false;
 
-        Node->RuntimeActor->SetActorTransform(Node->OriginalTransform);
-        Node->RuntimeActor->SetActorHiddenInGame(false);
+        Node->RuntimeActor->SetActorTransform(
+            Node->OriginalTransform);
 
-        Node->CurrentTransform = Node->OriginalTransform;
+        Node->RuntimeActor->SetActorHiddenInGame(
+            false);
+
+        Node->CurrentTransform =
+            Node->OriginalTransform;
       });
 
-  // 重置拆楼只恢复结构模型；设备继续保持业务侧设置的显隐状态。
-  SetNodeStructuralTreeVisibility(BuildingRuntimeData.Root.Get(), true);
+  // 重置拆楼只恢复结构模型。
+  SetNodeStructuralTreeVisibility(
+      BuildingRuntimeData.Root.Get(),
+      true);
 
   RestoreAllFloorCeilings();
 }

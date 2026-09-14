@@ -261,6 +261,8 @@ private:
 	/** 抬升完成后需要隐藏的楼层 */
 	TSet<UBuildingRuntimeNode*> LiftDropHideOnFinished;
 
+
+
 public:
 
 	// =========================================================
@@ -403,10 +405,6 @@ private:
 	 * @param bVisible 是否显示
 	 */
 	void ApplyFloorVisibility(int32 Floor, bool bVisible);
-
-
-
-
 
 public:
 
@@ -811,6 +809,8 @@ private:
 
 	UFUNCTION()
 	void OnLiftDropFinished();
+
+
 
 
 };
