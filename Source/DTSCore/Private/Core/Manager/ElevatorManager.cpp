@@ -1,5 +1,5 @@
-﻿#include "Core/Manager/ElevatorManager.h"
-#include "Core/Runtime/BuildingRuntimeData.h"
+#include "Core/Manager/ElevatorManager.h"
+#include "Core/Component/FloorSpaceComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
 

@@ -23,6 +23,19 @@ class SPACESYSTEMUNIT_API ASpaceStruct : public AActor
 	GENERATED_BODY()
 
 public:
+#if WITH_EDITOR
+	/**
+	 * 脚本编辑器方法，获取应该附加在哪一个空间上
+	 * @param InWorld 世界对象
+	 * @param DataTable 场景内的空间结构表
+	 * @param OutSpaceCode 找到的应当附加的空间编码
+	 * @return 寻找是否成功
+	 */
+	virtual bool GetAttachParentCode(UWorld* InWorld,UDataTable* DataTable, FString& OutSpaceCode) const;
+#endif
+	
+
+public:
 	// Sets default values for this actor's properties
 	ASpaceStruct();
 	// Called every frame

@@ -1,11 +1,11 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
 #include "Curves/CurveFloat.h"
 #include "BuildingFloorConfig.generated.h"
 
-class UBuildingFloorComponent;
+class UBuildingSpaceComponent;
 
 // ============================================================
 // 名称匹配
@@ -367,11 +367,15 @@ struct FBuildingLiftDropSettings
 	GENERATED_BODY()
 
 public:
-	/** 新目标楼层从多高的位置掉落，单位厘米 */
+	/** 进入 LiftDrop 拆楼时，是否隐藏其他未拆楼的楼栋 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LiftDrop")
+	bool bHideOtherBuildingsOnEnter = true;
+
+	/** 重新进入显示范围的楼层从多高的位置下降，单位厘米 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LiftDrop", meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float DropStartHeight = 3000.f;
 
-	/** 退出显示范围的楼层向上抬升多高后隐藏 */
+	/** 退出显示范围的楼层上浮距离；选择最高层时也作为最高层 TH 的抬高距离 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LiftDrop", meta = (ClampMin = "0.0", UIMin = "0.0"))
 	float LiftOutHeight = 3000.f;
 };
@@ -425,9 +429,9 @@ struct FBuildingComponentSettings
 	GENERATED_BODY()
 
 public:
-	/** 指定拆楼组件类，不填则默认使用 UBuildingFloorComponent */
+	/** 指定拆楼组件类，不填则默认使用 UBuildingSpaceComponent */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Component")
-	TSubclassOf<UBuildingFloorComponent> ComponentClass;
+	TSubclassOf<UBuildingSpaceComponent> ComponentClass;
 };
 
 // ============================================================

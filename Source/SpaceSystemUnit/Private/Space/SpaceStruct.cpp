@@ -2,7 +2,21 @@
 
 
 #include "Space/SpaceStruct.h"
+#include "Space/SpaceSubsystem.h"
 
+#if WITH_EDITOR
+bool ASpaceStruct::GetAttachParentCode(UWorld* InWorld, UDataTable* DataTable, FString& OutSpaceCode) const
+{
+	//校验世界与数据表、检查表结构是否符合 FWorldSpaceStructureRow
+	if (!InWorld || !DataTable || !DataTable->RowStruct->IsChildOf(FWorldSpaceStructureRow::StaticStruct()))
+	{
+		return false;
+	}
+	// 设置
+	OutSpaceCode = "";
+	return true;
+}
+#endif
 
 // Sets default values
 ASpaceStruct::ASpaceStruct()

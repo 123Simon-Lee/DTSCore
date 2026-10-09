@@ -1,6 +1,5 @@
 ﻿// Fill out your copyright notice in the Description page of Project Settings.
 
-
 #include "Core/Game/TwinScriptGameInstance.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
@@ -13,9 +12,13 @@ namespace
     return FPaths::Combine(FPaths::ProjectContentDir(), TEXT("Softwareconfig.ini"));
   }
 
-  bool TryReadBackendHostFromSoftwareConfig(FString& OutBackendHost)
+  /** 从 Softwareconfig.ini 的 HostSetting 节读取字符串。 */
+  bool TryReadHostSetting(
+      const TCHAR *Key,
+      FString &OutValue)
   {
     const FString ConfigPath = GetSoftwareConfigFilePath();
+
     if (!FPaths::FileExists(ConfigPath))
     {
       return false;
@@ -23,10 +26,29 @@ namespace
 
     FConfigFile ConfigFile;
     ConfigFile.Read(ConfigPath);
-    return ConfigFile.GetString(TEXT("HostSetting"), TEXT("BackendHost"), OutBackendHost);
+
+    FString Value;
+
+    if (!ConfigFile.GetString(
+            TEXT("HostSetting"),
+            Key,
+            Value))
+    {
+      return false;
+    }
+
+    Value.TrimStartAndEndInline();
+
+    if (Value.IsEmpty())
+    {
+      return false;
+    }
+
+    OutValue = MoveTemp(Value);
+    return true;
   }
 
-  void EnsureBackendHostEntryInSoftwareConfig(const FString& BackendHost)
+  void EnsureBackendHostEntryInSoftwareConfig(const FString &BackendHost)
   {
     const FString ConfigPath = GetSoftwareConfigFilePath();
     if (ConfigPath.IsEmpty())
@@ -59,7 +81,7 @@ namespace
 
     for (int32 Index = 0; Index < Lines.Num(); ++Index)
     {
-      FString& Line = Lines[Index];
+      FString &Line = Lines[Index];
       const FString TrimmedLine = Line.TrimStartAndEnd();
 
       if (TrimmedLine.StartsWith(TEXT("[")) && TrimmedLine.EndsWith(TEXT("]")))
@@ -119,12 +141,65 @@ namespace
 void UTwinScriptGameInstance::Init()
 {
   Super::Init();
+
+  /*
+   * 先读取配置，再启动 Puerts。
+   * 这样 TS 和 Widget 第一次访问时就能拿到正确地址。
+   */
+  FString LoadedBackendHost;
+
+  if (TryReadHostSetting(
+          TEXT("BackendHost"),
+          LoadedBackendHost))
+  {
+    BackendHost = LoadedBackendHost;
+  }
+  else
+  {
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("BackendHost not found, use default: %s"),
+        *BackendHost);
+
+    EnsureBackendHostEntryInSoftwareConfig(BackendHost);
+  }
+
+  FString LoadedWebURL;
+
+  if (TryReadHostSetting(TEXT("WebURL"), LoadedWebURL))
+  {
+    WebURL = LoadedWebURL;
+  }
+  else
+  {
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT("WebURL not found, use default: %s"),
+        *WebURL);
+  }
+
+  UE_LOG(
+      LogTemp,
+      Log,
+      TEXT("BackendHost: %s"),
+      *BackendHost);
+
+  UE_LOG(
+      LogTemp,
+      Log,
+      TEXT("WebURL: %s"),
+      *WebURL);
+
   if (bDebugMode)
   {
     GameScript = MakeShared<puerts::FJsEnv>(
-      std::make_unique<puerts::DefaultJSModuleLoader>(TEXT("JavaScript")),
-      std::make_shared<puerts::FDefaultLogger>(),
-      9000);
+        std::make_unique<puerts::DefaultJSModuleLoader>(
+            TEXT("JavaScript")),
+        std::make_shared<puerts::FDefaultLogger>(),
+        9000);
+
     if (bWaitForDebugger)
     {
       GameScript->WaitDebugger();
@@ -135,46 +210,11 @@ void UTwinScriptGameInstance::Init()
     GameScript = MakeShared<puerts::FJsEnv>();
   }
 
-  TArray<TPair<FString, UObject*>> Arguments;
-  Arguments.Add(TPair<FString, UObject*>(TEXT("GameInstance"), this));
-  GameScript->Start("MainGame", Arguments);
+  TArray<TPair<FString, UObject *>> Arguments;
+  Arguments.Add(
+      TPair<FString, UObject *>(TEXT("GameInstance"), this));
 
-  FString LoadedBackendHost = this->BackendHost;
-  if (TryReadBackendHostFromSoftwareConfig(LoadedBackendHost))
-  {
-    this->BackendHost = LoadedBackendHost.TrimStartAndEnd();
-  }
-  else
-  {
-    // 兼容旧的 HostSetting.json 配置，若 ini 里没有值则回退读取。
-    FString HostSettingPath = FPaths::Combine(FPaths::ProjectContentDir(), TEXT("Config/HostSetting.json"));
-    if (FPaths::FileExists(HostSettingPath))
-    {
-      FString Content;
-      FFileHelper::LoadFileToString(Content, *HostSettingPath);
-
-      TSharedPtr<FJsonObject> JsonObject;
-      TSharedRef<TJsonReader<>> JsonReader = TJsonReaderFactory<TCHAR>::Create(Content);
-      if (FJsonSerializer::Deserialize(JsonReader, JsonObject))
-      {
-        if (JsonObject->HasField(TEXT("BackendHost")))
-        {
-          this->BackendHost = JsonObject->GetStringField(TEXT("BackendHost")).TrimStartAndEnd();
-        }
-        else
-        {
-          UE_LOG(LogTemp, Error, TEXT("BackendHost not found"));
-        }
-      }
-    }
-    else
-    {
-      UE_LOG(LogTemp, Warning, TEXT("HostSetting.json not found, will use default backend host"));
-    }
-
-    EnsureBackendHostEntryInSoftwareConfig(this->BackendHost);
-  }
-
+  GameScript->Start(TEXT("MainGame"), Arguments);
 }
 
 void UTwinScriptGameInstance::OnStart()
@@ -188,12 +228,16 @@ void UTwinScriptGameInstance::Shutdown()
   GameScript.Reset();
 }
 
-void UTwinScriptGameInstance::CallTs(FString FunctionName, UObject* uobj)
+void UTwinScriptGameInstance::CallTs(FString FunctionName, UObject *uobj)
 {
-
 }
 
-FString UTwinScriptGameInstance::GetBackendHost()
+FString UTwinScriptGameInstance::GetWebURL() const
 {
-  return this->BackendHost;
+  return WebURL;
+}
+
+FString UTwinScriptGameInstance::GetBackendHost() const
+{
+  return BackendHost;
 }

@@ -1,6 +1,6 @@
-﻿#include "Core/Effect/BuildingFocusIsolationComponent.h"
+#include "Core/Effect/BuildingFocusIsolationComponent.h"
 
-#include "Core/Component/BuildingFloorComponent.h"
+#include "Core/Component/BuildingSpaceComponent.h"
 #include "Core/Effect/BuildingStencilChannels.h"
 #include "Components/PostProcessComponent.h"
 #include "Components/PrimitiveComponent.h"
@@ -89,7 +89,7 @@ void UBuildingFocusIsolationComponent::TickComponent(
 }
 
 void UBuildingFocusIsolationComponent::ActivateIsolation(
-    UBuildingFloorComponent* BuildingComponent)
+    UBuildingSpaceComponent* BuildingComponent)
 {
     if (!IsValid(BuildingComponent) || !BuildingComponent->GetFocusSettings().bEnableIsolation)
     {
@@ -113,7 +113,7 @@ void UBuildingFocusIsolationComponent::ActivateIsolation(
      */
     Request.bClearOutlineChannels = true;
 
-    for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingRuntimeNode>>& Pair :
+    for (const TPair<TObjectPtr<AActor>, TObjectPtr<UFloorSpaceComponent>>& Pair :
          BuildingComponent->ActorMap)
     {
         if (IsValid(Pair.Key))

@@ -1,17 +1,18 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Core/DataTable/BuildingFloorConfig.h"
-#include "Core/Runtime/BuildingRuntimeData.h"
-#include "Core/Adapter/BuildingSourceAdapter.h"
+#include "Core/Component/FloorSpaceComponent.h"
 #include "Core/Camera/BuildingCameraFocusInterface.h"
 #include "BuildingManager.generated.h"
 
-class UBuildingFloorComponent;
+class UBuildingSpaceComponent;
 class UBuildingFocusIsolationComponent;
+class UCampusSpaceComponent;
+class ASpace;
 // 运行时模式枚举
 UENUM(BlueprintType)
 enum class EBuildingActiveDisassembleMode : uint8
@@ -20,7 +21,6 @@ enum class EBuildingActiveDisassembleMode : uint8
   Drawer UMETA(DisplayName = "Drawer"),
   Visibility UMETA(DisplayName = "Visibility"),
   LiftDrop UMETA(DisplayName = "LiftDrop")
-
 };
 
 USTRUCT(BlueprintType)
@@ -51,11 +51,11 @@ public:
 
   /** 当前活跃拆楼组件 */
   UPROPERTY(BlueprintReadOnly, Category = "SceneScope")
-  TObjectPtr<UBuildingFloorComponent> NowComponent = nullptr;
+  TObjectPtr<UBuildingSpaceComponent> NowComponent = nullptr;
 
   /** 当前活跃楼层节点 */
   UPROPERTY(BlueprintReadOnly, Category = "SceneScope")
-  TObjectPtr<UBuildingRuntimeNode> NowFloorNode = nullptr;
+  TObjectPtr<UFloorSpaceComponent> NowFloorNode = nullptr;
 
   /** 当前拆楼模式 */
   UPROPERTY(BlueprintReadOnly, Category = "SceneScope")
@@ -81,32 +81,27 @@ public:
   }
 };
 
-// 楼层点击事件
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+    FOnBuildingTraceActorEvent,
+    AActor *,
+    HitActor);
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
-    FOnBuildingNodeClicked,
-    UBuildingRuntimeNode *,
-    Node,
-    int32,
-    FloorIndex);
-// 楼层Hover事件
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
-    FOnBuildingNodeHovered,
-    UBuildingRuntimeNode *,
-    Node,
-    int32,
-    FloorIndex);
+    FOnBuildingTraceActorClicked,
+    AActor *,
+    HitActor,
+    FKey,
+    ButtonPressed);
 
 /**
  * 建筑拆楼管理器
  *
- * Manager 只消费 IBuildingSourceAdapter 输出的通用 Actor RuntimeData。
- * 具体数据源由独立 Adapter 插件注册，可使用 Space、ActorTag、DataAsset 或 Datasmith Metadata。
+ * Manager 直接使用 SpaceSystemUnit 的 Campus -> Building -> Floor 标准空间树。
  *
  * Manager 负责：
- * - 通过 Adapter 找到建筑
+ * - 通过 USpaceSubsystem 找到建筑
  * - 根据 DataTable 读取拆楼配置
- * - 递归构建 FBuildingRuntimeData
- * - 给每栋楼动态挂载 UBuildingFloorComponent
+ * - 给园区、楼栋和楼层动态挂载各自的 SpaceSelectorComponent
  * - 支持多栋楼独立拆楼
  * - 支持场景点击 / Hover
  */
@@ -135,7 +130,7 @@ public:
   UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Config")
   TObjectPtr<UDataTable> BuildingFloorConfigTable = nullptr;
 
-  /** Adapter 识别建筑的标签 */
+  /** SpaceSystemUnit 识别建筑的 Mark */
   UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Config")
   FString BuildingMark = TEXT("Building");
 
@@ -143,7 +138,7 @@ public:
   UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Config")
   FString FloorMark = TEXT("BuildingFloor");
 
-  /** 发现建筑前是否要求 Adapter 刷新自己的源数据。 */
+  /** 发现建筑前是否刷新 ASpace 的附加关系缓存。 */
   UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Config")
   bool bRefreshSourceDataOnBeginPlay = false;
 
@@ -198,26 +193,36 @@ public:
   FSceneScope SceneScope;
   /** 每栋楼对应一个拆楼组件  缓存的楼栋对应的拆楼组件Map*/
   UPROPERTY(BlueprintReadOnly, Category = "Runtime")
-  TMap<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> BuildingMap;
+  TMap<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> BuildingMap;
+
+  /** 园区级选择与活跃状态组件。 */
+  UPROPERTY(BlueprintReadOnly, Category = "Runtime")
+  TObjectPtr<UCampusSpaceComponent> CampusComponent = nullptr;
 
   /** 当前 Hover 节点 */
   UPROPERTY(BlueprintReadOnly, Category = "Runtime")
-  TObjectPtr<UBuildingRuntimeNode> HoverNode = nullptr;
+  TObjectPtr<UFloorSpaceComponent> HoverNode = nullptr;
 
   /** 当前 Hover 组件 */
   UPROPERTY(BlueprintReadOnly, Category = "Runtime")
-  TObjectPtr<UBuildingFloorComponent> HoverComponent = nullptr;
+  TObjectPtr<UBuildingSpaceComponent> HoverComponent = nullptr;
 
 public:
   // =========================================================
   // Event
   // =========================================================
 
-  UPROPERTY(BlueprintAssignable, Category = "Event")
-  FOnBuildingNodeClicked OnBuildingNodeClicked;
+  /** DoTrace开始命中Actor。 */
+  UPROPERTY(BlueprintAssignable, Category = "Trace")
+  FOnBuildingTraceActorEvent OnBuildingTraceBeginHover;
 
-  UPROPERTY(BlueprintAssignable, Category = "Event")
-  FOnBuildingNodeHovered OnBuildingNodeHovered;
+  /** DoTrace不再命中Actor。 */
+  UPROPERTY(BlueprintAssignable, Category = "Trace")
+  FOnBuildingTraceActorEvent OnBuildingTraceEndHover;
+
+  /** DoTrace命中的Actor被点击。 */
+  UPROPERTY(BlueprintAssignable, Category = "Trace")
+  FOnBuildingTraceActorClicked OnBuildingTraceClicked;
 
 public:
   // =========================================================
@@ -228,24 +233,18 @@ public:
   UFUNCTION(BlueprintCallable, Category = "Manager")
   void InitializeBuildings();
 
-  /** 非 Space 数据源可直接注册已经构建好的通用 RuntimeData。 */
-  bool RegisterBuildingRuntimeData(const FBuildingRuntimeData &RuntimeData);
-
-  /** 在 InitializeBuildings 前替换默认数据源适配器。 */
-  void SetBuildingSourceAdapter(TUniquePtr<IBuildingSourceAdapter> &&InAdapter);
-
   /** 获取指定建筑的拆楼组件 */
   UFUNCTION(BlueprintPure, Category = "Manager")
-  UBuildingFloorComponent *GetBuildingComponent(AActor *BuildingActor) const;
+  UBuildingSpaceComponent *GetBuildingComponent(AActor *BuildingActor) const;
 
   /** 设置当前正在拆楼的楼栋 */
   void SetSceneScopeBuilding(
       AActor *BuildingActor,
-      UBuildingFloorComponent *Component,
+      UBuildingSpaceComponent *Component,
       EBuildingActiveDisassembleMode Mode);
 
   /** 设置当前选中的楼层 */
-  void SetSceneScopeFloor(UBuildingRuntimeNode *FloorNode);
+  void SetSceneScopeFloor(UFloorSpaceComponent *FloorNode);
 
   /** 清空当前楼层 */
   void ClearSceneScopeFloor();
@@ -277,6 +276,12 @@ public:
   {
     return SceneScope.NowFloorIndex;
   }
+  /**
+   * 只聚焦楼栋，不拆楼、不改变当前楼栋显隐状态。
+   * 目标楼栋已隐藏时仍执行镜头聚焦，但不会将楼栋重新显示。
+   */
+  UFUNCTION(BlueprintCallable, Category = "Building")
+  bool FocusBuildingByCode(const FString &BuildingCode);
 
   /** 指定建筑分层  拆楼核心调用*/
   UFUNCTION(BlueprintCallable, Category = "Manager")
@@ -308,6 +313,25 @@ public:
   UFUNCTION(BlueprintCallable, Category = "Visibility")
   void SetAllBuildingsVisibility(bool bVisible);
 
+  /**
+   * 只控制全部楼栋的结构模型显隐。
+   *
+   * 不退出拆楼，不重置 SceneScope，
+   * 不隐藏楼栋、楼层和设备 Actor。
+   */
+  UFUNCTION(BlueprintCallable, Category = "Visibility")
+  void SetAllBuildingStructureVisibility(bool bVisible);
+  /**
+   * 根据楼栋Code单独设置目标楼栋内容显隐。
+   *
+   * 不恢复其他楼栋，
+   * 不退出当前拆楼状态，
+   * 不修改SceneScope。
+   */
+  UFUNCTION(BlueprintCallable, Category = "Building")
+  bool SetBuildingVisibilityByCode(
+      const FString &BuildingCode,
+      bool bVisible);
   /**
    * 隐藏所有拆楼组件管理的楼栋内容，但保留当前拆楼 SceneScope、楼层选择和模型位置
    *
@@ -364,25 +388,46 @@ public:
   UFUNCTION(BlueprintCallable, Category = "Manager")
   bool BackCurrentBuildingToNormal();
 
+  /** 运行时继续Building鼠标射线。 */
+  UFUNCTION(BlueprintCallable, Category = "Trace")
+  void ResumeBuildingTrace();
+
+  /** 运行时暂停Building鼠标射线。 */
+  UFUNCTION(BlueprintCallable, Category = "Trace")
+  void PauseBuildingTrace();
+
+  UFUNCTION(BlueprintPure, Category = "Trace")
+  bool IsBuildingTraceRunning() const
+  {
+    return bBuildingTraceRunning;
+  }
+
+private:
+  bool bBuildingTraceRunning = true;
+  /** 当前被DoTrace悬停的Actor。 */
+  TWeakObjectPtr<AActor> CurrentBuildingTraceActor;
+
+  /** 清除当前DoTrace悬停Actor。 */
+  void ClearBuildingTraceHover();
+
 private:
   // =========================================================
   // Initialize
   // =========================================================
 
-  bool InitializeBuilding(const FBuildingSourceRecord &Source, const FBuildingFloorConfig &Config);
+  bool InitializeBuilding(ASpace *BuildingSpace, const FBuildingFloorConfig &Config);
 
-  FBuildingFloorConfig *FindConfigForBuilding(const FBuildingSourceRecord &Source) const;
-
-  TUniquePtr<IBuildingSourceAdapter> BuildingSourceAdapter;
+  FBuildingFloorConfig *FindConfigForBuilding(const ASpace *BuildingSpace) const;
+  ASpace *FindCampusSpace(const TArray<ASpace *> &BuildingSpaces) const;
 
   /** 命中 Actor 的反向索引，避免射线交互时遍历全部楼栋。 */
   UPROPERTY(Transient)
-  TMap<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> HitComponentMap;
+  TMap<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> HitComponentMap;
 
   UPROPERTY(Transient)
-  TMap<TObjectPtr<AActor>, TObjectPtr<UBuildingRuntimeNode>> HitNodeMap;
+  TMap<TObjectPtr<AActor>, TObjectPtr<UFloorSpaceComponent>> HitNodeMap;
 
-  void IndexComponentHitActors(UBuildingFloorComponent *Component);
+  void IndexComponentHitActors(UBuildingSpaceComponent *Component);
 
   // =========================================================
   // Input
@@ -395,11 +440,11 @@ private:
   void HandleClick(const FHitResult &Hit);
 
   void ClearHover();
-
+  // 解析命中节点 返回命中组件和节点
   bool ResolveHitNode(
       AActor *HitActor,
-      UBuildingFloorComponent *&OutComponent,
-      UBuildingRuntimeNode *&OutNode) const;
+      UBuildingSpaceComponent *&OutComponent,
+      UFloorSpaceComponent *&OutNode) const;
 
   // =========================================================
   // Utility
@@ -414,10 +459,10 @@ private:
 
   UObject *ResolveCameraFocusProvider() const;
   void SaveCameraFocusViewIfNeeded();
-  bool RequestBuildingFocus(UBuildingFloorComponent *Component);
+  bool RequestBuildingFocus(UBuildingSpaceComponent *Component);
   void RequestFloorFocus(
-      UBuildingFloorComponent *Component,
-      UBuildingRuntimeNode *FloorNode);
+      UBuildingSpaceComponent *Component,
+      UFloorSpaceComponent *FloorNode);
   // 回退相机聚焦
   void RestoreCameraFocusView();
   // 清除相机聚焦缓存
@@ -434,17 +479,17 @@ private:
   // 进入当前激活建筑拆楼模式Drawer
   void EnterDrawerBuilding(
       AActor *BuildingActor,
-      UBuildingFloorComponent *Component);
+      UBuildingSpaceComponent *Component);
   // 进入当前激活建筑拆楼模式Visibility
   void EnterVisibilityBuilding(
       AActor *BuildingActor,
-      UBuildingFloorComponent *Component);
+      UBuildingSpaceComponent *Component);
 
   // 把所有建筑的楼层都设置为可见
   void RestoreAllBuildingsVisibility();
 
   // 只把一个建筑设置为可见，其他建筑都设置为不可见
-  void SetOnlyBuildingVisible(UBuildingFloorComponent *VisibleComponent);
+  void SetOnlyBuildingVisible(UBuildingSpaceComponent *VisibleComponent);
 
   // LiftDrop
 
@@ -463,7 +508,7 @@ private:
   FTimerHandle LiftDropFocusReadyTimer;
 
   /** 进入 LiftDrop 模式 */
-  void EnterLiftDropBuilding(AActor *BuildingActor, UBuildingFloorComponent *Component);
+  void EnterLiftDropBuilding(AActor *BuildingActor, UBuildingSpaceComponent *Component);
 
   /** 相机移动时间结束，允许操作楼层 */
   void HandleLiftDropFocusReady();

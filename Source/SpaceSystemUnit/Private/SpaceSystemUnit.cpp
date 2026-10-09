@@ -1,5 +1,7 @@
 ﻿#include "SpaceSystemUnit.h"
 
+DEFINE_LOG_CATEGORY(LogSpaceSystem);
+
 #define LOCTEXT_NAMESPACE "FSpaceSystemUnitModule"
 
 void FSpaceSystemUnitModule::StartupModule()

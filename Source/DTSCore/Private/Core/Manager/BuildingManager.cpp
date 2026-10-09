@@ -1,7 +1,9 @@
-﻿// Fill out your copyright notice in the Description page of Project Settings.
+// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "Core/Manager/BuildingManager.h"
-#include "Core/Component/BuildingFloorComponent.h"
+#include "Core/Component/BuildingSpaceComponent.h"
+#include "Core/Component/CampusSpaceComponent.h"
+#include "Core/DataTable/BuildingSpaceStructureRow.h"
 #include "Core/Effect/BuildingFocusIsolationComponent.h"
 #include "Core/Effect/BuildingStencilChannels.h"
 
@@ -11,6 +13,8 @@
 #include "GameFramework/PlayerController.h"
 #include "InputCoreTypes.h"
 #include "Kismet/GameplayStatics.h"
+#include "Space/Space.h"
+#include "Space/SpaceSubsystem.h"
 
 #include "Kismet/GameplayStatics.h"
 #include "InputCoreTypes.h"
@@ -26,8 +30,6 @@ ABuildingManager::ABuildingManager()
   FocusIsolationComponent =
       CreateDefaultSubobject<UBuildingFocusIsolationComponent>(
           TEXT("BuildingFocusIsolation"));
-
-  BuildingSourceAdapter = CreateDefaultBuildingSourceAdapter();
 }
 
 void ABuildingManager::BeginPlay()
@@ -45,39 +47,65 @@ void ABuildingManager::Tick(float DeltaTime)
 {
   Super::Tick(DeltaTime);
 
-  if (!bEnableHover && !bEnableClick && !bEnableDebugHotkeys)
+  /*
+   * 暂停后不执行任何射线。
+   */
+  if (!bBuildingTraceRunning)
   {
     return;
   }
 
   FHitResult Hit;
-  const bool bNeedsTrace = bEnableHover || bEnableClick;
-  const bool bHit = bNeedsTrace && DoTrace(Hit);
+  const bool bHit = DoTrace(Hit);
 
-  if (bEnableHover)
+  AActor *NewHitActor =
+      bHit
+          ? Hit.GetActor()
+          : nullptr;
+
+  AActor *OldHitActor =
+      CurrentBuildingTraceActor.Get();
+
+  /*
+   * 鼠标命中的Actor发生变化。
+   */
+  if (OldHitActor != NewHitActor)
   {
-    if (bHit)
+    if (IsValid(OldHitActor))
     {
-      HandleHover(Hit);
+      OnBuildingTraceEndHover.Broadcast(
+          OldHitActor);
     }
-    else
+
+    CurrentBuildingTraceActor =
+        NewHitActor;
+
+    if (IsValid(NewHitActor))
     {
-      ClearHover();
+      OnBuildingTraceBeginHover.Broadcast(
+          NewHitActor);
     }
   }
 
-  if (bEnableClick)
+  /*
+   * 当前命中的Actor被点击。
+   */
+  if (IsValid(NewHitActor))
   {
-    APlayerController *PC = UGameplayStatics::GetPlayerController(this, 0);
-    if (PC && PC->WasInputKeyJustPressed(EKeys::LeftMouseButton))
+    APlayerController *PC =
+        UGameplayStatics::GetPlayerController(
+            this,
+            0);
+
+    if (PC &&
+        PC->WasInputKeyJustPressed(
+            EKeys::LeftMouseButton))
     {
-      if (bHit)
-      {
-        HandleClick(Hit);
-      }
+      OnBuildingTraceClicked.Broadcast(
+          NewHitActor,
+          EKeys::LeftMouseButton);
     }
   }
-  HandleDebugHotkeys();
 }
 
 // =========================================================
@@ -112,14 +140,14 @@ void ABuildingManager::InitializeBuildings()
 
   /*
    * 如果 InitializeBuildings 可能被重复调用，
-   * 这里要把之前动态创建的 UBuildingFloorComponent 销毁。
+   * 这里要把之前动态创建的 UBuildingSpaceComponent 销毁。
    *
    * 否则只 BuildingMap.Empty() 的话，
    * 旧组件还挂在 BuildingSpace 上，后面可能出现重复组件。
    */
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> &Pair : BuildingMap)
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
   {
-    UBuildingFloorComponent *OldComponent = Pair.Value.Get();
+    UBuildingSpaceComponent *OldComponent = Pair.Value.Get();
 
     if (OldComponent)
     {
@@ -131,32 +159,59 @@ void ABuildingManager::InitializeBuildings()
   HitComponentMap.Empty();
   HitNodeMap.Empty();
 
-  if (!BuildingSourceAdapter)
-  {
-    BuildingSourceAdapter = CreateDefaultBuildingSourceAdapter();
-  }
-
-  if (!BuildingSourceAdapter || !GetWorld())
+  if (!GetWorld())
   {
     return;
   }
 
-  FBuildingSourceSettings SourceSettings;
-  SourceSettings.BuildingMarker = BuildingMark;
-  SourceSettings.FloorMarker = FloorMark;
-  SourceSettings.bRefreshSourceOnDiscover = bRefreshSourceDataOnBeginPlay;
+  USpaceSubsystem *SpaceSubsystem =
+      GetWorld()->GetSubsystem<USpaceSubsystem>();
 
-  TArray<FBuildingSourceRecord> Buildings;
-  BuildingSourceAdapter->DiscoverBuildings(GetWorld(), SourceSettings, Buildings);
-
-  for (const FBuildingSourceRecord &Source : Buildings)
+  if (!IsValid(SpaceSubsystem))
   {
-    if (!Source.BuildingActor.IsValid())
+    UE_LOG(
+        LogTemp,
+        Error,
+        TEXT("BuildingManager: SpaceSubsystem unavailable"));
+    return;
+  }
+
+  SpaceSubsystem->SetSelectMode(
+      ESpaceSelectMode::Single);
+
+  TArray<ASpace *> Buildings = SpaceSubsystem->GetSpacesByMark(BuildingMark);
+  if (bRefreshSourceDataOnBeginPlay)
+  {
+    for (ASpace *Space : SpaceSubsystem->GetSpaces())
+    {
+      if (IsValid(Space))
+      {
+        Space->InitializeSpaceData();
+      }
+    }
+    Buildings = SpaceSubsystem->GetSpacesByMark(BuildingMark);
+  }
+
+  ASpace *CampusSpace = FindCampusSpace(Buildings);
+  if (IsValid(CampusSpace))
+  {
+    CampusComponent = CampusSpace->FindComponentByClass<UCampusSpaceComponent>();
+    if (!CampusComponent)
+    {
+      CampusComponent = NewObject<UCampusSpaceComponent>(CampusSpace, NAME_None, RF_Transient);
+      CampusComponent->RegisterComponent();
+    }
+    CampusComponent->InitializeCampus(CampusSpace);
+  }
+
+  for (ASpace *BuildingSpace : Buildings)
+  {
+    if (!IsValid(BuildingSpace))
     {
       continue;
     }
 
-    FBuildingFloorConfig *Config = FindConfigForBuilding(Source);
+    FBuildingFloorConfig *Config = FindConfigForBuilding(BuildingSpace);
 
     if (!Config)
     {
@@ -164,9 +219,9 @@ void ABuildingManager::InitializeBuildings()
           LogTemp,
           Warning,
           TEXT("BuildingManager: 找不到建筑配置 Actor=%s Id=%s DisplayName=%s"),
-          *Source.BuildingActor->GetName(),
-          *Source.BuildingId,
-          *Source.DisplayName);
+          *BuildingSpace->GetName(),
+          *BuildingSpace->Code,
+          *BuildingSpace->DisplayName);
 
       continue;
     }
@@ -179,7 +234,7 @@ void ABuildingManager::InitializeBuildings()
      * 这样 Visibility 模式下，当前楼栋拆楼时，
      * Manager 才能隐藏 / 显示其他楼栋。
      */
-    InitializeBuilding(Source, *Config);
+    InitializeBuilding(BuildingSpace, *Config);
   }
 
   UE_LOG(
@@ -189,61 +244,25 @@ void ABuildingManager::InitializeBuildings()
       BuildingMap.Num());
 }
 
-void ABuildingManager::SetBuildingSourceAdapter(
-    TUniquePtr<IBuildingSourceAdapter> &&InAdapter)
-{
-  BuildingSourceAdapter = MoveTemp(InAdapter);
-}
-
-bool ABuildingManager::RegisterBuildingRuntimeData(
-    const FBuildingRuntimeData &RuntimeData)
-{
-  AActor *BuildingActor = RuntimeData.BuildingActor.Get();
-  if (!IsValid(BuildingActor) || !RuntimeData.Root ||
-      RuntimeData.BuildingId.IsEmpty() || BuildingMap.Contains(BuildingActor))
-  {
-    return false;
-  }
-
-  UClass *ComponentClass =
-      RuntimeData.Config.Component.ComponentClass
-          ? RuntimeData.Config.Component.ComponentClass.Get()
-          : UBuildingFloorComponent::StaticClass();
-
-  UBuildingFloorComponent *Component =
-      NewObject<UBuildingFloorComponent>(BuildingActor, ComponentClass);
-  if (!Component)
-  {
-    return false;
-  }
-
-  BuildingActor->AddInstanceComponent(Component);
-  Component->RegisterComponent();
-  Component->Initialize(RuntimeData);
-  BuildingMap.Add(BuildingActor, Component);
-  IndexComponentHitActors(Component);
-  return true;
-}
 // 把配置表里面的数据初始化到对应建筑的组件上
 bool ABuildingManager::InitializeBuilding(
-    const FBuildingSourceRecord &Source,
+    ASpace *BuildingSpace,
     const FBuildingFloorConfig &Config)
 {
-  AActor *BuildingActor = Source.BuildingActor.Get();
-  if (!BuildingActor || !BuildingSourceAdapter)
+  if (!IsValid(BuildingSpace))
   {
     return false;
   }
 
   // 防止重复初始化同一栋楼
-  if (BuildingMap.Contains(BuildingActor))
+  if (BuildingMap.Contains(BuildingSpace))
   {
     UE_LOG(
         LogTemp,
         Warning,
         TEXT("BuildingManager: 建筑已初始化，跳过 Actor=%s Id=%s"),
-        *BuildingActor->GetName(),
-        *Source.BuildingId);
+        *BuildingSpace->GetName(),
+        *BuildingSpace->Code);
 
     return true;
   }
@@ -251,39 +270,31 @@ bool ABuildingManager::InitializeBuilding(
   UClass *ComponentClass =
       Config.Component.ComponentClass
           ? Config.Component.ComponentClass.Get()
-          : UBuildingFloorComponent::StaticClass();
+          : UBuildingSpaceComponent::StaticClass();
 
-  UBuildingFloorComponent *Component =
-      NewObject<UBuildingFloorComponent>(
-          BuildingActor,
-          ComponentClass);
+  UBuildingSpaceComponent *Component =
+      BuildingSpace->FindComponentByClass<UBuildingSpaceComponent>();
+  if (!Component)
+  {
+    Component = NewObject<UBuildingSpaceComponent>(BuildingSpace, ComponentClass, NAME_None, RF_Transient);
+  }
 
   if (!Component)
   {
     return false;
   }
 
-  BuildingActor->AddInstanceComponent(Component);
-  Component->RegisterComponent();
-
-  FBuildingRuntimeData RuntimeData;
-  FBuildingSourceSettings SourceSettings;
-  SourceSettings.BuildingMarker = BuildingMark;
-  SourceSettings.FloorMarker = FloorMark;
-  if (!BuildingSourceAdapter->BuildRuntimeData(
-          Source,
-          BuildingActor,
-          SourceSettings,
-          Config,
-          RuntimeData))
+  if (!Component->IsRegistered())
   {
-    Component->DestroyComponent();
-    return false;
+    Component->RegisterComponent();
   }
+  Component->Initialize(BuildingSpace, Config, FloorMark);
 
-  Component->Initialize(RuntimeData);
-
-  BuildingMap.Add(BuildingActor, Component);
+  BuildingMap.Add(BuildingSpace, Component);
+  if (CampusComponent)
+  {
+    CampusComponent->RegisterBuilding(Component);
+  }
   IndexComponentHitActors(Component);
 
   if (!Config.bCanDisassemble)
@@ -292,8 +303,8 @@ bool ABuildingManager::InitializeBuilding(
         LogTemp,
         Warning,
         TEXT("BuildingManager: 建筑已加入管理，但不可拆 Actor=%s Id=%s Component=%s"),
-        *BuildingActor->GetName(),
-        *Source.BuildingId,
+        *BuildingSpace->GetName(),
+        *BuildingSpace->Code,
         *Component->GetName());
 
     return true;
@@ -303,70 +314,75 @@ bool ABuildingManager::InitializeBuilding(
       LogTemp,
       Warning,
       TEXT("BuildingManager: 初始化可拆建筑成功 Actor=%s Id=%s Component=%s"),
-      *BuildingActor->GetName(),
-      *Source.BuildingId,
+      *BuildingSpace->GetName(),
+      *BuildingSpace->Code,
       *Component->GetName());
 
   return true;
 }
 
 FBuildingFloorConfig *ABuildingManager::FindConfigForBuilding(
-    const FBuildingSourceRecord &Source) const
+    const ASpace *BuildingSpace) const
 {
-  if (!BuildingFloorConfigTable || !Source.BuildingActor.IsValid())
+  if (!BuildingFloorConfigTable || !IsValid(BuildingSpace))
   {
     return nullptr;
   }
 
   static const FString Context = TEXT("BuildingManager::FindConfigForBuilding");
 
-  const FString Code = Source.BuildingId.TrimStartAndEnd();
-  // 只根据Code和默认配置来检测
+  const FString Code = BuildingSpace->Code.TrimStartAndEnd();
+
+  /*
+   * 表已合并为 DT_WorldSpaceStructure（FBuildingSpaceRow）：
+   * 每个楼栋行的 BuildingConfig 就是该楼栋的拆楼配置，
+   * 不再有独立的 DT_BuildingFloorConfig / Default 回退行。
+   */
   if (!Code.IsEmpty())
   {
-    if (FBuildingFloorConfig *Row =
-            BuildingFloorConfigTable->FindRow<FBuildingFloorConfig>(
+    if (FBuildingSpaceRow *Row =
+            BuildingFloorConfigTable->FindRow<FBuildingSpaceRow>(
                 FName(*Code),
                 Context,
                 false))
     {
-      return Row;
+      return &Row->BuildingConfig;
     }
   }
 
-  // if (!DisplayName.IsEmpty())
-  //{
-  //     if (FBuildingFloorConfig* Row =
-  //         BuildingFloorConfigTable->FindRow<FBuildingFloorConfig>(
-  //             FName(*DisplayName),
-  //             Context,
-  //             false))
-  //     {
-  //         return Row;
-  //     }
-  // }
+  return nullptr;
+}
 
-  // if (FBuildingFloorConfig* Row =
-  //     BuildingFloorConfigTable->FindRow<FBuildingFloorConfig>(
-  //         FName(*BuildingSpace->GetName()),
-  //         Context,
-  //         false))
-  //{
-  //     return Row;
-  // }
-
-  if (bUseDefaultConfigRow)
+ASpace *ABuildingManager::FindCampusSpace(const TArray<ASpace *> &BuildingSpaces) const
+{
+  if (BuildingSpaces.IsEmpty() || !IsValid(BuildingSpaces[0]))
   {
-    if (FBuildingFloorConfig *Row =
-            BuildingFloorConfigTable->FindRow<FBuildingFloorConfig>(
-                DefaultConfigRowName,
-                Context,
-                false))
-    {
-      return Row;
-    }
+    return nullptr;
   }
 
+  for (ASpace *Candidate = BuildingSpaces[0]->GetParentSpace();
+       IsValid(Candidate);
+       Candidate = Candidate->GetParentSpace())
+  {
+    bool bContainsAll = true;
+    for (ASpace *Building : BuildingSpaces)
+    {
+      ASpace *Current = Building;
+      while (IsValid(Current) && Current != Candidate)
+      {
+        Current = Current->GetParentSpace();
+      }
+      if (Current != Candidate)
+      {
+        bContainsAll = false;
+        break;
+      }
+    }
+    if (bContainsAll)
+    {
+      return Candidate;
+    }
+  }
   return nullptr;
 }
 
@@ -374,102 +390,85 @@ FBuildingFloorConfig *ABuildingManager::FindConfigForBuilding(
 // Input
 // =========================================================
 // 射线检测
-bool ABuildingManager::DoTrace(FHitResult &OutHit)
+bool ABuildingManager::DoTrace(
+    FHitResult &OutHit)
 {
   OutHit = FHitResult();
 
-  UWorld *World = GetWorld();
-  if (!World)
+  APlayerController *PC =
+      UGameplayStatics::GetPlayerController(
+          this,
+          0);
+
+  if (!IsValid(PC))
   {
     return false;
   }
 
-  APlayerController *PC = UGameplayStatics::GetPlayerController(this, 0);
-  if (!PC)
-  {
-    return false;
-  }
-
-  FVector ViewLocation;
-  FRotator ViewRotation;
-  PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
-
-  const FVector Start = ViewLocation;
-  const FVector End = Start + ViewRotation.Vector() * TraceLength;
-
-  FCollisionQueryParams Params(SCENE_QUERY_STAT(BuildingManagerTrace), true);
-  Params.AddIgnoredActor(this);
-
-  return World->LineTraceSingleByChannel(
-      OutHit,
-      Start,
-      End,
+  /*
+   * 使用鼠标位置发射射线。
+   */
+  return PC->GetHitResultUnderCursor(
       TraceChannel,
-      Params);
+      true,
+      OutHit);
 }
-
+// 处理鼠标射线点击事件
 void ABuildingManager::HandleClick(const FHitResult &Hit)
 {
-  UBuildingFloorComponent *Component = nullptr;
-  UBuildingRuntimeNode *Node = nullptr;
+  UBuildingSpaceComponent *Component = nullptr;
+  UFloorSpaceComponent *Node = nullptr;
 
-  if (!ResolveHitNode(Hit.GetActor(), Component, Node))
-  {
-    return;
-  }
-
-  if (!Component || !Node)
+  if (!ResolveHitNode(Hit.GetActor(), Component, Node) ||
+      !Component ||
+      !Node)
   {
     return;
   }
 
   AActor *BuildingActor = Component->GetBuildingActor();
-  if (!BuildingActor)
+  if (!IsValid(BuildingActor))
   {
     return;
   }
 
-  if (Node->FloorIndex != BUILDING_INVALID_FLOOR_INDEX)
+  if (Component->IsDrawerDisassembleMode())
   {
     /*
-     * LiftDrop 第一次点击楼层只负责进入楼栋并聚焦，
-     * 不立即执行拆楼。
+     * Drawer：
+     * - 命中楼层时执行楼层点击；
+     * - 命中楼栋根节点时执行整栋分层。
      */
-    if (Component->IsLiftDropDisassembleMode())
+    if (Node->FloorIndex != BUILDING_INVALID_FLOOR_INDEX)
     {
-      const bool bSameLiftDropBuilding =
-          SceneScope.NowComponent == Component &&
-          SceneScope.NowMode ==
-              EBuildingActiveDisassembleMode::LiftDrop;
-
-      if (!bSameLiftDropBuilding)
-      {
-        EnterLiftDropBuilding(BuildingActor, Component);
-
-        return;
-      }
-
-      if (!bLiftDropFocusReady)
-      {
-        // 相机还在移动，不广播楼层点击事件。
-        return;
-      }
+      ToggleBuildingFloor(BuildingActor, Node->FloorIndex);
     }
-
-    ToggleBuildingFloor(BuildingActor, Node->FloorIndex);
+    else
+    {
+      EnterDrawerBuilding(BuildingActor, Component);
+    }
   }
   else if (Component->IsVisibilityDisassembleMode())
   {
+    // Visibility 永远只进入整栋楼模式。
     EnterVisibilityBuilding(BuildingActor, Component);
   }
   else if (Component->IsLiftDropDisassembleMode())
   {
-    // 点击到楼栋节点而不是楼层节点时，先进入并聚焦。
+    // LiftDrop 永远只进入整栋楼模式。
     EnterLiftDropBuilding(BuildingActor, Component);
+  }
+  else
+  {
     return;
   }
 
-  OnBuildingNodeClicked.Broadcast(Node, Node->FloorIndex);
+  // /*
+  //  * Visibility/LiftDrop 广播的是根节点，
+  //  * FloorIndex 为 BUILDING_INVALID_FLOOR_INDEX。
+  //  * 只有 Drawer 才可能广播具体楼层号。
+  //  */
+  // OnBuildingNodeClicked.Broadcast(Node, Node->FloorIndex);
 }
 
 void ABuildingManager::HandleHover(const FHitResult &Hit)
@@ -481,8 +480,8 @@ void ABuildingManager::HandleHover(const FHitResult &Hit)
     return;
   }
 
-  UBuildingFloorComponent *Component = nullptr;
-  UBuildingRuntimeNode *Node = nullptr;
+  UBuildingSpaceComponent *Component = nullptr;
+  UFloorSpaceComponent *Node = nullptr;
 
   if (!ResolveHitNode(HitActor, Component, Node))
   {
@@ -505,9 +504,9 @@ void ABuildingManager::HandleHover(const FHitResult &Hit)
     HoverComponent->SetNodeHighlight(HoverNode, true);
   }
 
-  OnBuildingNodeHovered.Broadcast(
-      Node,
-      Node ? Node->FloorIndex : BUILDING_INVALID_FLOOR_INDEX);
+  // OnBuildingNodeHovered.Broadcast(
+  //     Node,
+  //     Node ? Node->FloorIndex : BUILDING_INVALID_FLOOR_INDEX);
 }
 
 void ABuildingManager::ClearHover()
@@ -523,32 +522,43 @@ void ABuildingManager::ClearHover()
 
 bool ABuildingManager::ResolveHitNode(
     AActor *HitActor,
-    UBuildingFloorComponent *&OutComponent,
-    UBuildingRuntimeNode *&OutNode) const
+    UBuildingSpaceComponent *&OutComponent,
+    UFloorSpaceComponent *&OutNode) const
 {
   OutComponent = nullptr;
   OutNode = nullptr;
 
-  if (!HitActor)
+  if (!IsValid(HitActor))
   {
     return false;
   }
 
   AActor *Current = HitActor;
+
   while (Current)
   {
-    const TObjectPtr<UBuildingFloorComponent> *ComponentPtr =
-        HitComponentMap.Find(Current);
-    const TObjectPtr<UBuildingRuntimeNode> *NodePtr =
-        HitNodeMap.Find(Current);
+    const TObjectPtr<UBuildingSpaceComponent> *ComponentPtr = HitComponentMap.Find(Current);
 
-    if (ComponentPtr && NodePtr && IsValid(ComponentPtr->Get()) && NodePtr->Get())
+    const TObjectPtr<UFloorSpaceComponent> *NodePtr = HitNodeMap.Find(Current);
+
+    if (ComponentPtr && NodePtr)
     {
-      OutComponent = ComponentPtr->Get();
-      OutNode = NodePtr->Get();
-      return true;
+      UBuildingSpaceComponent *Component = ComponentPtr->Get();
+      UFloorSpaceComponent *Node = NodePtr->Get();
+
+      if (!IsValid(Component) || !Node)
+      {
+        return false;
+      }
+
+      OutComponent = Component;
+
+      OutNode = Node;
+
+      return OutNode != nullptr;
     }
 
+    // 命中子模型时继续向上查找所属拆楼节点。
     Current = Current->GetAttachParentActor();
   }
 
@@ -556,18 +566,18 @@ bool ABuildingManager::ResolveHitNode(
 }
 
 void ABuildingManager::IndexComponentHitActors(
-    UBuildingFloorComponent *Component)
+    UBuildingSpaceComponent *Component)
 {
   if (!Component)
   {
     return;
   }
 
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingRuntimeNode>> &Pair :
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UFloorSpaceComponent>> &Pair :
        Component->ActorMap)
   {
     AActor *Actor = Pair.Key.Get();
-    UBuildingRuntimeNode *Node = Pair.Value.Get();
+    UFloorSpaceComponent *Node = Pair.Value.Get();
     if (IsValid(Actor) && Node)
     {
       HitComponentMap.Add(Actor, Component);
@@ -616,7 +626,9 @@ void ABuildingManager::ExitActiveDisassemble(bool bRestoreCamera)
   GetWorldTimerManager().ClearTimer(LiftDropFocusReadyTimer);
 
   bLiftDropFocusReady = false;
-  UBuildingFloorComponent *ActiveComponent = SceneScope.NowComponent.Get();
+
+  UBuildingSpaceComponent *ActiveComponent =
+      SceneScope.NowComponent.Get();
 
   if (!ActiveComponent)
   {
@@ -624,19 +636,25 @@ void ABuildingManager::ExitActiveDisassemble(bool bRestoreCamera)
     {
       FocusIsolationComponent->DeactivateIsolation(false);
     }
-    SceneScope.Reset();
+
+    ClearSceneScope();
+
     if (bRestoreCamera)
     {
       RestoreCameraFocusView();
     }
+
     return;
   }
 
   const bool bShouldRestoreCamera =
-      bRestoreCamera && ActiveComponent->GetFocusSettings().bRestoreViewOnExit;
+      bRestoreCamera &&
+      ActiveComponent->GetFocusSettings().bRestoreViewOnExit;
+
   ActiveComponent->OnLayeringTimeLineFinished.RemoveDynamic(
       this,
       &ABuildingManager::HandleLayeringFocusFinished);
+
   ActiveComponent->OnFloorExpandTimelineFinished.RemoveDynamic(
       this,
       &ABuildingManager::HandleFloorFocusFinished);
@@ -667,7 +685,7 @@ void ABuildingManager::ExitActiveDisassemble(bool bRestoreCamera)
     FocusIsolationComponent->DeactivateIsolation(false);
   }
 
-  SceneScope.Reset();
+  ClearSceneScope();
 
   if (bShouldRestoreCamera)
   {
@@ -681,7 +699,7 @@ void ABuildingManager::ExitActiveDisassemble(bool bRestoreCamera)
 
 void ABuildingManager::EnterDrawerBuilding(
     AActor *BuildingActor,
-    UBuildingFloorComponent *Component)
+    UBuildingSpaceComponent *Component)
 {
   if (!BuildingActor || !Component)
   {
@@ -731,7 +749,7 @@ void ABuildingManager::EnterDrawerBuilding(
 
 void ABuildingManager::EnterVisibilityBuilding(
     AActor *BuildingActor,
-    UBuildingFloorComponent *Component)
+    UBuildingSpaceComponent *Component)
 {
   if (!BuildingActor || !Component)
   {
@@ -821,7 +839,7 @@ void ABuildingManager::SaveCameraFocusViewIfNeeded()
 }
 // 聚焦楼栋
 bool ABuildingManager::RequestBuildingFocus(
-    UBuildingFloorComponent *Component)
+    UBuildingSpaceComponent *Component)
 {
   if (!Component || !Component->GetFocusSettings().bAutoFocusOnEnter)
   {
@@ -849,8 +867,8 @@ bool ABuildingManager::RequestBuildingFocus(
 }
 // 聚焦楼层
 void ABuildingManager::RequestFloorFocus(
-    UBuildingFloorComponent *Component,
-    UBuildingRuntimeNode *FloorNode)
+    UBuildingSpaceComponent *Component,
+    UFloorSpaceComponent *FloorNode)
 {
   if (!Component || !FloorNode)
   {
@@ -913,7 +931,7 @@ void ABuildingManager::ClearCameraFocusView()
 
 void ABuildingManager::HandleLayeringFocusFinished()
 {
-  UBuildingFloorComponent *Component = SceneScope.NowComponent.Get();
+  UBuildingSpaceComponent *Component = SceneScope.NowComponent.Get();
   if (!Component ||
       SceneScope.NowMode != EBuildingActiveDisassembleMode::Drawer)
   {
@@ -928,20 +946,31 @@ void ABuildingManager::HandleLayeringFocusFinished()
 
 void ABuildingManager::HandleFloorFocusFinished()
 {
-  UBuildingFloorComponent *Component = SceneScope.NowComponent.Get();
-  if (!Component ||
-      SceneScope.NowMode != EBuildingActiveDisassembleMode::Drawer)
+  UBuildingSpaceComponent *Component =
+      SceneScope.NowComponent.Get();
+
+  const bool bCanFocusFloor =
+      SceneScope.NowMode ==
+          EBuildingActiveDisassembleMode::Drawer ||
+      SceneScope.NowMode ==
+          EBuildingActiveDisassembleMode::LiftDrop;
+
+  if (!Component || !bCanFocusFloor)
   {
     return;
   }
 
-  Component->OnFloorExpandTimelineFinished.RemoveDynamic(
-      this,
-      &ABuildingManager::HandleFloorFocusFinished);
+  Component->OnFloorExpandTimelineFinished.RemoveDynamic(this, &ABuildingManager::HandleFloorFocusFinished);
 
-  if (UBuildingRuntimeNode *FloorNode = SceneScope.NowFloorNode.Get())
+  if (UFloorSpaceComponent *FloorNode = SceneScope.NowFloorNode.Get())
   {
-    RequestFloorFocus(Component, FloorNode);
+    /*
+     * 这里会根据 FloorIndex 查找 FloorFocusOverrides，
+     * 然后使用对应楼层的 CameraLocation、Pitch、Yaw 等配置。
+     */
+    RequestFloorFocus(
+        Component,
+        FloorNode);
   }
   else if (Component->GetFocusSettings().bRefocusBuildingOnFloorClose)
   {
@@ -951,9 +980,9 @@ void ABuildingManager::HandleFloorFocusFinished()
 
 void ABuildingManager::RestoreAllBuildingsVisibility()
 {
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> &Pair : BuildingMap)
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
   {
-    UBuildingFloorComponent *Component = Pair.Value.Get();
+    UBuildingSpaceComponent *Component = Pair.Value.Get();
 
     if (!Component)
     {
@@ -967,11 +996,11 @@ void ABuildingManager::RestoreAllBuildingsVisibility()
 
 // 设置某个楼栋显示其他楼栋隐藏的核心逻辑
 void ABuildingManager::SetOnlyBuildingVisible(
-    UBuildingFloorComponent *VisibleComponent)
+    UBuildingSpaceComponent *VisibleComponent)
 {
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> &Pair : BuildingMap)
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
   {
-    UBuildingFloorComponent *Component = Pair.Value.Get();
+    UBuildingSpaceComponent *Component = Pair.Value.Get();
 
     if (!Component)
     {
@@ -989,7 +1018,7 @@ void ABuildingManager::SetOnlyBuildingVisible(
   }
 }
 
-void ABuildingManager::EnterLiftDropBuilding(AActor *BuildingActor, UBuildingFloorComponent *Component)
+void ABuildingManager::EnterLiftDropBuilding(AActor *BuildingActor, UBuildingSpaceComponent *Component)
 {
   if (!BuildingActor ||
       !Component ||
@@ -1013,11 +1042,8 @@ void ABuildingManager::EnterLiftDropBuilding(AActor *BuildingActor, UBuildingFlo
     FocusIsolationComponent->ActivateIsolation(Component);
   }
 
-  /*
-   * LiftDrop 是 Visibility 变体，
-   * 其他楼栋的处理复用 Visibility 配置。
-   */
-  if (Component->ShouldHideOtherBuildingsOnVisibilityEnter())
+  // LiftDrop 使用自己的配置决定是否隐藏其他未拆楼的楼栋。
+  if (Component->ShouldHideOtherBuildingsOnLiftDropEnter())
   {
     SetOnlyBuildingVisible(Component);
   }
@@ -1074,7 +1100,7 @@ void ABuildingManager::HandleLiftDropFocusReady()
 // Public API
 // =========================================================
 
-UBuildingFloorComponent *ABuildingManager::GetBuildingComponent(
+UBuildingSpaceComponent *ABuildingManager::GetBuildingComponent(
     AActor *BuildingActor) const
 {
   if (!BuildingActor)
@@ -1082,7 +1108,7 @@ UBuildingFloorComponent *ABuildingManager::GetBuildingComponent(
     return nullptr;
   }
 
-  if (const TObjectPtr<UBuildingFloorComponent> *Ptr =
+  if (const TObjectPtr<UBuildingSpaceComponent> *Ptr =
           BuildingMap.Find(BuildingActor))
   {
     return Ptr->Get();
@@ -1102,9 +1128,9 @@ void ABuildingManager::SetAllBuildingsVisibility(bool bVisible)
     return;
   }
 
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> &Pair : BuildingMap)
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
   {
-    UBuildingFloorComponent *Component = Pair.Value.Get();
+    UBuildingSpaceComponent *Component = Pair.Value.Get();
     if (!Component)
     {
       continue;
@@ -1116,6 +1142,42 @@ void ABuildingManager::SetAllBuildingsVisibility(bool bVisible)
   }
 }
 
+bool ABuildingManager::SetBuildingVisibilityByCode(
+    const FString &BuildingCode,
+    bool bVisible)
+{
+  AActor *BuildingActor =
+      FindBuildingActorByCode(BuildingCode);
+
+  UBuildingSpaceComponent *Component =
+      GetBuildingComponent(BuildingActor);
+
+  if (!IsValid(BuildingActor) ||
+      !IsValid(Component))
+  {
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT(
+            "[BuildingManager] "
+            "SetBuildingVisibilityByCode failed, Code=%s"),
+        *BuildingCode);
+
+    return false;
+  }
+
+  /*
+   * 只修改目标楼栋。
+   *
+   * 不调用SetAllBuildingsVisibility，
+   * 所以不会恢复其他楼栋，
+   * 也不会清除当前SceneScope。
+   */
+  Component->SetWholeBuildingVisibility(bVisible);
+
+  return true;
+}
+
 void ABuildingManager::HideAllBuildingContentPreserveDisassemble()
 {
   /*
@@ -1123,9 +1185,9 @@ void ABuildingManager::HideAllBuildingContentPreserveDisassemble()
    * 只隐藏各组件管理的 Actor 树，不调用 ExitActiveDisassemble、
    * Reset 或 ShowAll，避免清空 SceneScope，也避免旧楼层状态回写。
    */
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> &Pair : BuildingMap)
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
   {
-    if (UBuildingFloorComponent *Component = Pair.Value.Get())
+    if (UBuildingSpaceComponent *Component = Pair.Value.Get())
     {
       Component->SetWholeBuildingVisibility(false);
     }
@@ -1134,7 +1196,7 @@ void ABuildingManager::HideAllBuildingContentPreserveDisassemble()
 
 void ABuildingManager::RestoreBuildingContentFromPreservedDisassemble()
 {
-  UBuildingFloorComponent *ActiveComponent =
+  UBuildingSpaceComponent *ActiveComponent =
       SceneScope.NowComponent.Get();
 
   if (!ActiveComponent)
@@ -1171,7 +1233,7 @@ void ABuildingManager::RestoreBuildingContentFromPreservedDisassemble()
             BUILDING_INVALID_FLOOR_INDEX &&
         ActiveComponent->GetFloorCount() == 1)
     {
-      if (UBuildingRuntimeNode *UniqueFloorNode =
+      if (UFloorSpaceComponent *UniqueFloorNode =
               ActiveComponent->GetHighestFloorNode())
       {
         RestoreFloorIndex =
@@ -1197,24 +1259,50 @@ void ABuildingManager::RestoreBuildingContentFromPreservedDisassemble()
 }
 
 // 设置当前选中楼栋
-void ABuildingManager::SetSceneScopeBuilding(AActor *BuildingActor, UBuildingFloorComponent *Component, EBuildingActiveDisassembleMode Mode)
+void ABuildingManager::SetSceneScopeBuilding(
+    AActor *BuildingActor,
+    UBuildingSpaceComponent *Component,
+    EBuildingActiveDisassembleMode Mode)
 {
   SceneScope.NowBuilding = BuildingActor;
-  SceneScope.NowBuildingId = Component ? Component->GetBuildingId() : FString();
+  SceneScope.NowBuildingId =
+      IsValid(Component)
+          ? Component->GetBuildingId()
+          : FString();
+
   SceneScope.NowComponent = Component;
   SceneScope.NowMode = Mode;
 
-  // 切换楼栋时，先清空当前楼层
+  if (CampusComponent)
+  {
+    CampusComponent->SelectBuilding(
+        Component,
+        false);
+  }
+  else if (IsValid(Component))
+  {
+    UE_LOG(
+        LogTemp,
+        Warning,
+        TEXT(
+            "[BuildingManager] CampusComponent为空，"
+            "直接发送楼栋选择：%s"),
+        *Component->GetBuildingId());
+
+    Component->SelectSingle();
+  }
+
   SceneScope.NowFloor = nullptr;
   SceneScope.NowFloorId.Reset();
   SceneScope.NowFloorNode = nullptr;
-  SceneScope.NowFloorIndex = BUILDING_INVALID_FLOOR_INDEX;
+  SceneScope.NowFloorIndex =
+      BUILDING_INVALID_FLOOR_INDEX;
 }
 // 设置当前选中楼层
 void ABuildingManager::SetSceneScopeFloor(
-    UBuildingRuntimeNode *FloorNode)
+    UFloorSpaceComponent *FloorNode)
 {
-  if (!FloorNode)
+  if (!IsValid(FloorNode))
   {
     ClearSceneScopeFloor();
     return;
@@ -1222,26 +1310,89 @@ void ABuildingManager::SetSceneScopeFloor(
 
   SceneScope.NowFloorNode = FloorNode;
   SceneScope.NowFloor = FloorNode->RuntimeActor;
-  SceneScope.NowFloorId = FloorNode->NodeId;
+  SceneScope.NowFloorId = FloorNode->GetFloorId();
   SceneScope.NowFloorIndex = FloorNode->FloorIndex;
-}
-void ABuildingManager::ClearSceneScopeFloor()
-{
-  SceneScope.NowFloor = nullptr;
-  SceneScope.NowFloorId.Reset();
-  SceneScope.NowFloorNode = nullptr;
-  SceneScope.NowFloorIndex = BUILDING_INVALID_FLOOR_INDEX;
+
+  if (CampusComponent)
+  {
+    CampusComponent->SelectFloor(
+        FloorNode,
+        false);
+  }
+  else
+  {
+    FloorNode->SelectSingle();
+  }
 }
 
 void ABuildingManager::ClearSceneScope()
 {
+  if (CampusComponent)
+  {
+    CampusComponent->ClearActiveSelection();
+  }
+  else if (UWorld *World = GetWorld())
+  {
+    if (USpaceSubsystem *SpaceSubsystem =
+            World->GetSubsystem<USpaceSubsystem>())
+    {
+      SpaceSubsystem->ClearSelection();
+    }
+  }
+
   SceneScope.Reset();
+}
+
+bool ABuildingManager::FocusBuildingByCode(const FString &BuildingCode)
+{
+  // 拿到楼栋角色
+  AActor *BuildingActor = FindBuildingActorByCode(BuildingCode);
+  // 拿到楼栋组件
+  UBuildingSpaceComponent *Component = GetBuildingComponent(BuildingActor);
+  if (!IsValid(BuildingActor) || !Component)
+  {
+    return false;
+  }
+
+  const bool bAlreadyFocused =
+      SceneScope.NowComponent == Component &&
+      SceneScope.NowMode ==
+          EBuildingActiveDisassembleMode::None;
+
+  if (!bAlreadyFocused)
+  {
+    // 退出上一个拆楼状态，但保留最初的镜头恢复记录。
+    ExitActiveDisassemble(false);
+    // // 确保没有楼栋受到上一个页面的显隐影响。
+    // RestoreAllBuildingsVisibility();
+    SaveCameraFocusViewIfNeeded();
+
+    // 记录当前楼栋，但不进入任何拆楼模式。
+    SetSceneScopeBuilding(
+        BuildingActor,
+        Component,
+        EBuildingActiveDisassembleMode::None);
+  }
+
+  RequestBuildingFocus(Component);
+  return true;
 }
 
 // 进入拆楼的模式分发：
 void ABuildingManager::LayeringBuilding(AActor *BuildingActor)
 {
-  UBuildingFloorComponent *Component = GetBuildingComponent(BuildingActor);
+  UBuildingSpaceComponent *Component = GetBuildingComponent(BuildingActor);
+
+  if (!IsValid(BuildingActor) || !Component)
+  {
+    return;
+  }
+
+  if (Component->GetFloorCount() == 0)
+  {
+    FocusBuildingByCode(Component->GetBuildingId());
+    return;
+  }
 
   if (!Component ||
       !Component->CanDisassembleBuilding())
@@ -1269,7 +1420,7 @@ void ABuildingManager::LayeringBuilding(AActor *BuildingActor)
 
 void ABuildingManager::BackBuildingToNormal(AActor *BuildingActor)
 {
-  UBuildingFloorComponent *Component = GetBuildingComponent(BuildingActor);
+  UBuildingSpaceComponent *Component = GetBuildingComponent(BuildingActor);
 
   if (!Component)
   {
@@ -1290,7 +1441,7 @@ void ABuildingManager::ToggleBuildingFloor(
     AActor *BuildingActor,
     int32 Floor)
 {
-  UBuildingFloorComponent *Component = GetBuildingComponent(BuildingActor);
+  UBuildingSpaceComponent *Component = GetBuildingComponent(BuildingActor);
 
   if (!Component)
   {
@@ -1302,7 +1453,7 @@ void ABuildingManager::ToggleBuildingFloor(
     return;
   }
 
-  UBuildingRuntimeNode *FloorNode = Component->FindFloorWithIndex(Floor);
+  UFloorSpaceComponent *FloorNode = Component->FindFloorWithIndex(Floor);
 
   if (!FloorNode || !FloorNode->bCanDisassemble)
   {
@@ -1351,12 +1502,32 @@ void ABuildingManager::ToggleBuildingFloor(
       return;
     }
 
-    SetSceneScopeFloor(Component->FindFloorWithIndex(Floor));
+    UFloorSpaceComponent *ActiveFloorNode =
+        Component->FindFloorWithIndex(Floor);
+
+    SetSceneScopeFloor(ActiveFloorNode);
 
     /*
-     * 不调用 RequestFloorFocus。
-     * LiftDrop 期间镜头保持配置表中的整栋楼视角。
+     * LiftDrop 楼层存在上下移动动画。
+     *
+     * 必须等动画结束后再聚焦，否则计算到的是楼层移动前，
+     * 或者移动过程中的 Bounds。
      */
+    if (Component->IsLiftDropRunning())
+    {
+      Component->OnFloorExpandTimelineFinished.RemoveDynamic(this, &ABuildingManager::HandleFloorFocusFinished);
+
+      Component->OnFloorExpandTimelineFinished.AddDynamic(this, &ABuildingManager::HandleFloorFocusFinished);
+    }
+    else
+    {
+      /*
+       * 没有移动对象、没有动画曲线或动画时间为 0 时，
+       * SelectLiftDropFloor 会同步完成，此时直接聚焦。
+       */
+      RequestFloorFocus(Component, ActiveFloorNode);
+    }
+
     return;
   }
 
@@ -1397,7 +1568,7 @@ void ABuildingManager::ToggleBuildingFloor(
           this,
           &ABuildingManager::HandleFloorFocusFinished);
     }
-    else if (UBuildingRuntimeNode *ActiveFloorNode =
+    else if (UFloorSpaceComponent *ActiveFloorNode =
                  SceneScope.NowFloorNode.Get())
     {
       // 没有曲线或零时长动画时直接聚焦。
@@ -1447,10 +1618,10 @@ AActor *ABuildingManager::FindBuildingActorByCode(const FString &BuildingCode) c
     return nullptr;
   }
 
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> &Pair : BuildingMap)
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
   {
     AActor *BuildingActor = Pair.Key.Get();
-    UBuildingFloorComponent *Component = Pair.Value.Get();
+    UBuildingSpaceComponent *Component = Pair.Value.Get();
 
     if (!IsValid(BuildingActor) || !Component)
     {
@@ -1471,24 +1642,44 @@ AActor *ABuildingManager::FindBuildingActorByCode(const FString &BuildingCode) c
   return nullptr;
 }
 
-bool ABuildingManager::LayeringBuildingByCode(const FString &BuildingCode)
+bool ABuildingManager::LayeringBuildingByCode(
+    const FString &BuildingCode)
 {
-  AActor *BuildingActor = FindBuildingActorByCode(BuildingCode);
+  AActor *BuildingActor =
+      FindBuildingActorByCode(BuildingCode);
 
-  if (!IsValid(BuildingActor))
+  UBuildingSpaceComponent *Component =
+      GetBuildingComponent(BuildingActor);
+
+  if (!IsValid(BuildingActor) ||
+      !IsValid(Component))
   {
     return false;
   }
 
   LayeringBuilding(BuildingActor);
-  return true;
+
+  const bool bEntered =
+      SceneScope.NowBuilding == BuildingActor &&
+      SceneScope.NowComponent == Component;
+
+  UE_LOG(
+      LogTemp,
+      Warning,
+      TEXT(
+          "[BuildingManager] LayeringBuildingByCode "
+          "Code=%s Entered=%s"),
+      *BuildingCode,
+      bEntered ? TEXT("true") : TEXT("false"));
+
+  return bEntered;
 }
 
 bool ABuildingManager::EnterVisibilityBuildingByCode(
     const FString &BuildingCode)
 {
   AActor *BuildingActor = FindBuildingActorByCode(BuildingCode);
-  UBuildingFloorComponent *Component = GetBuildingComponent(BuildingActor);
+  UBuildingSpaceComponent *Component = GetBuildingComponent(BuildingActor);
 
   if (!IsValid(BuildingActor) ||
       !Component ||
@@ -1509,7 +1700,7 @@ bool ABuildingManager::ToggleVisibilityBuildingFloorByCode(
     int32 Floor)
 {
   AActor *BuildingActor = FindBuildingActorByCode(BuildingCode);
-  UBuildingFloorComponent *Component = GetBuildingComponent(BuildingActor);
+  UBuildingSpaceComponent *Component = GetBuildingComponent(BuildingActor);
 
   if (!IsValid(BuildingActor) ||
       !Component ||
@@ -1518,7 +1709,7 @@ bool ABuildingManager::ToggleVisibilityBuildingFloorByCode(
     return false;
   }
 
-  UBuildingRuntimeNode *FloorNode = Component->FindFloorWithIndex(Floor);
+  UFloorSpaceComponent *FloorNode = Component->FindFloorWithIndex(Floor);
   if (!FloorNode || !FloorNode->bCanDisassemble)
   {
     return false;
@@ -1581,9 +1772,9 @@ bool ABuildingManager::ToggleCurrentBuildingFloor(int32 Floor)
 
 void ABuildingManager::LayeringAllBuildings()
 {
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> &Pair : BuildingMap)
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
   {
-    if (UBuildingFloorComponent *Component = Pair.Value.Get())
+    if (UBuildingSpaceComponent *Component = Pair.Value.Get())
     {
       Component->LayeringDisplay();
     }
@@ -1592,12 +1783,12 @@ void ABuildingManager::LayeringAllBuildings()
 
 void ABuildingManager::BackAllBuildingsToNormal()
 {
-  UBuildingFloorComponent *ActiveComponent = SceneScope.NowComponent.Get();
+  UBuildingSpaceComponent *ActiveComponent = SceneScope.NowComponent.Get();
   ExitActiveDisassemble(true);
 
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> &Pair : BuildingMap)
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
   {
-    if (UBuildingFloorComponent *Component = Pair.Value.Get())
+    if (UBuildingSpaceComponent *Component = Pair.Value.Get())
     {
       if (Component != ActiveComponent)
       {
@@ -1627,9 +1818,9 @@ void ABuildingManager::HandleDebugHotkeys()
   // F1：重新初始化
   /*if (PC->WasInputKeyJustPressed(EKeys::R))
   {
-      UE_LOG(LogTemp, Warning, TEXT("[BuildingDebug] F1 InitializeBuildings"));
-      InitializeBuildings();
-      return;
+    UE_LOG(LogTemp, Warning, TEXT("[BuildingDebug] F1 InitializeBuildings"));
+    InitializeBuildings();
+    return;
   }*/
 
   //// F2：下一栋楼并拆楼
@@ -1674,56 +1865,56 @@ void ABuildingManager::HandleDebugHotkeys()
 
   /* if (PC->WasInputKeyJustPressed(EKeys::One))
    {
-       DebugToggleCurrentFloor(1);
-       return;
+     DebugToggleCurrentFloor(1);
+     return;
    }
 
    if (PC->WasInputKeyJustPressed(EKeys::Two))
    {
-       DebugToggleCurrentFloor(2);
-       return;
+     DebugToggleCurrentFloor(2);
+     return;
    }
 
    if (PC->WasInputKeyJustPressed(EKeys::Three))
    {
-       DebugToggleCurrentFloor(3);
-       return;
+     DebugToggleCurrentFloor(3);
+     return;
    }
 
    if (PC->WasInputKeyJustPressed(EKeys::Four))
    {
-       DebugToggleCurrentFloor(4);
-       return;
+     DebugToggleCurrentFloor(4);
+     return;
    }
 
    if (PC->WasInputKeyJustPressed(EKeys::Five))
    {
-       DebugToggleCurrentFloor(5);
-       return;
+     DebugToggleCurrentFloor(5);
+     return;
    }
 
    if (PC->WasInputKeyJustPressed(EKeys::Six))
    {
-       DebugToggleCurrentFloor(6);
-       return;
+     DebugToggleCurrentFloor(6);
+     return;
    }
 
    if (PC->WasInputKeyJustPressed(EKeys::Seven))
    {
-       DebugToggleCurrentFloor(7);
-       return;
+     DebugToggleCurrentFloor(7);
+     return;
    }
 
    if (PC->WasInputKeyJustPressed(EKeys::Eight))
    {
-       DebugToggleCurrentFloor(8);
-       return;
+     DebugToggleCurrentFloor(8);
+     return;
    }
 
    if (PC->WasInputKeyJustPressed(EKeys::Nine))
    {
-       DebugToggleCurrentFloor(9);
-       return;
+     DebugToggleCurrentFloor(9);
+     return;
    }*/
 }
 
@@ -1732,10 +1923,10 @@ void ABuildingManager::GetDebugBuildingActors(
 {
   OutBuildings.Reset();
 
-  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingFloorComponent>> &Pair : BuildingMap)
+  for (const TPair<TObjectPtr<AActor>, TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
   {
     AActor *BuildingActor = Pair.Key.Get();
-    UBuildingFloorComponent *Component = Pair.Value.Get();
+    UBuildingSpaceComponent *Component = Pair.Value.Get();
 
     if (!IsValid(BuildingActor) || !Component)
     {
@@ -1848,4 +2039,82 @@ void ABuildingManager::DebugToggleCurrentFloor(int32 Floor)
 
   // 统一走 Manager 入口
   ToggleBuildingFloor(BuildingActor, Floor);
+}
+
+void ABuildingManager::ClearSceneScopeFloor()
+{
+  // 取消当前所有空间选择
+  if (CampusComponent)
+  {
+    CampusComponent->ClearActiveSelection();
+  }
+  else if (UWorld *World = GetWorld())
+  {
+    if (USpaceSubsystem *SpaceSubsystem =
+            World->GetSubsystem<USpaceSubsystem>())
+    {
+      SpaceSubsystem->ClearSelection();
+    }
+  }
+
+  SceneScope.NowFloor = nullptr;
+  SceneScope.NowFloorId.Reset();
+  SceneScope.NowFloorNode = nullptr;
+  SceneScope.NowFloorIndex =
+      BUILDING_INVALID_FLOOR_INDEX;
+}
+
+void ABuildingManager::ResumeBuildingTrace()
+{
+  bBuildingTraceRunning = true;
+}
+
+void ABuildingManager::PauseBuildingTrace()
+{
+  if (!bBuildingTraceRunning)
+  {
+    return;
+  }
+
+  bBuildingTraceRunning = false;
+
+  /*
+   * 主动发送EndHover。
+   *
+   * BuildingBox收到后会立即隐藏，
+   * 不再依赖NotifyActorEndCursorOver。
+   */
+  ClearBuildingTraceHover();
+}
+
+void ABuildingManager::SetAllBuildingStructureVisibility(
+    bool bVisible)
+{
+  for (
+      const TPair<
+          TObjectPtr<AActor>,
+          TObjectPtr<UBuildingSpaceComponent>> &Pair : BuildingMap)
+  {
+    UBuildingSpaceComponent *Component =
+        Pair.Value.Get();
+
+    if (!IsValid(Component))
+    {
+      continue;
+    }
+
+    Component->SetBuildingStructureVisibility(bVisible);
+  }
+}
+
+void ABuildingManager::ClearBuildingTraceHover()
+{
+  AActor *OldHitActor = CurrentBuildingTraceActor.Get();
+
+  CurrentBuildingTraceActor.Reset();
+
+  if (IsValid(OldHitActor))
+  {
+    OnBuildingTraceEndHover.Broadcast(OldHitActor);
+  }
 }

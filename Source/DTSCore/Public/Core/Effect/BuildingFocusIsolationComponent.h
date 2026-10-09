@@ -1,10 +1,10 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "BuildingFocusIsolationComponent.generated.h"
 //拆楼组件
-class UBuildingFloorComponent;
+class UBuildingSpaceComponent;
 //材质接口
 class UMaterialInterface;
 //材质接口动态实例
@@ -165,7 +165,7 @@ public:
      * 内部转换为 BuildingDisassemble 请求，现有 Manager 调用无需改变。
      */
     UFUNCTION(BlueprintCallable, Category = "Focus Isolation")
-    void ActivateIsolation(UBuildingFloorComponent* BuildingComponent);
+    void ActivateIsolation(UBuildingSpaceComponent* BuildingComponent);
 
     /**
      * 兼容原拆楼退出入口。
