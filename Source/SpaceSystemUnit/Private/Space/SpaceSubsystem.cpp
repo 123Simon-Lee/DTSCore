@@ -14,6 +14,11 @@ namespace
     {
       return;
     }
+    // 未实现 SpaceSelectable 接口的空间跳过通知，避免 Execute 内部断言
+    if (!Space->GetClass()->ImplementsInterface(USpaceSelectable::StaticClass()))
+    {
+      return;
+    }
     if (bSelected)
     {
       // C++ 实现的接口，直接调虚函数
@@ -235,6 +240,7 @@ void USpaceSubsystem::ClearSelection()
       continue;
 
     NotifySpaceSelection(Space, false);
+    OnSelectionChanged.Broadcast(Space, false);
   }
 }
 
@@ -267,6 +273,7 @@ void USpaceSubsystem::ToggleSingleSelect(ASpace *NewSpace)
   SelectedSpaces.Add(NewSpace);
 
   NotifySpaceSelection(NewSpace, true);
+  OnSelectionChanged.Broadcast(NewSpace, true);
 
   UE_LOG(LogSpaceSystem, Log, TEXT("SpaceSubsystem: ToggleSingleSelect Code=%s"), *NewSpace->Code);
 }
@@ -293,6 +300,7 @@ void USpaceSubsystem::ToggleMultipleSelect(const TArray<ASpace *> &NewSpaces)
   for (ASpace *Space : SelectedSpaces)
   {
     NotifySpaceSelection(Space, true);
+    OnSelectionChanged.Broadcast(Space, true);
   }
 
   UE_LOG(LogSpaceSystem, Log, TEXT("SpaceSubsystem: ToggleMultipleSelect count=%d"), SelectedSpaces.Num());
@@ -323,7 +331,83 @@ void USpaceSubsystem::AddMultipleSelect(const TArray<ASpace *> &NewSpaces)
   for (ASpace *Space : AddedSpaces)
   {
     NotifySpaceSelection(Space, true);
+    OnSelectionChanged.Broadcast(Space, true);
   }
 
   UE_LOG(LogSpaceSystem, Log, TEXT("SpaceSubsystem: AddToMultiSelect count=%d"), AddedSpaces.Num());
+}
+
+TMap<FString, UWorldSpaceStructureNode *> USpaceSubsystem::BuildStructureSpaceTreeMap(
+    FString Code,
+    const UDataTable *Table,
+    UObject *RootOuter,
+    int32 MaxDepth)
+{
+  // 定义空结果Map
+  TMap<FString, UWorldSpaceStructureNode *> EmptyResult;
+  // 检查表指针
+  if (!Table)
+    return EmptyResult;
+  // 如果表内拥有这个编码，则构建对象，并调用遍历函数处理
+  if (const FWorldSpaceStructureRow *Row = Table->FindRow<FWorldSpaceStructureRow>(*Code, Code))
+  {
+    // 根空间 Outer ，可为空
+    UWorldSpaceStructureNode *Item = NewObject<UWorldSpaceStructureNode>(RootOuter);
+    // 填充数据
+    Item->Row = *Row;
+    // 是否有数据环检测集合
+    TSet<FString> Visited;
+    // 累积结果Map
+    TMap<FString, UWorldSpaceStructureNode *> Result;
+    BuildStructureSpaceTreeMapInternal(Item, Table, 0, MaxDepth, Visited, Result);
+    return Result;
+  }
+
+  return EmptyResult;
+}
+
+void USpaceSubsystem::BuildStructureSpaceTreeMapInternal(
+    UWorldSpaceStructureNode *Item,
+    const UDataTable *Table,
+    int32 CurrentDepth,
+    int32 MaxDepth,
+    TSet<FString> &Visited,
+    TMap<FString, UWorldSpaceStructureNode *> &OutResult)
+{
+  // 深度保护
+  if (CurrentDepth >= MaxDepth)
+  {
+    UE_LOG(LogSpaceSystem, Warning, TEXT("SpaceSubsystem: 树深度超过上限 %d, 截断在: %s"), MaxDepth, *Item->GetCode());
+    return;
+  }
+
+  // 数据环检测
+  const FString CurCode = Item->GetCode();
+  if (Visited.Contains(CurCode))
+  {
+    UE_LOG(LogSpaceSystem, Warning, TEXT("SpaceSubsystem: 检测到数据环, 跳过: %s"), *CurCode);
+    return;
+  }
+  Visited.Add(CurCode);
+
+  // 往结果数组内添加根空间
+  OutResult.Add(CurCode, Item);
+
+  // 获取并构建子对象
+  // 寻找子对象编码
+  for (const FString &SubCode : Item->Row.SubCode)
+  {
+    // 如果表内拥有这个编码，则需要构建对象，并添加进入自身子指针引用，然后把他的子树Map也添加进入结果数组
+    if (const FWorldSpaceStructureRow *SubRow = Table->FindRow<FWorldSpaceStructureRow>(*SubCode, SubCode))
+    {
+      // 子空间挂在父空间上
+      UWorldSpaceStructureNode *SubItem = NewObject<UWorldSpaceStructureNode>(Item);
+      // 填充数据
+      SubItem->Row = *SubRow;
+      SubItem->Parent = Item;
+      Item->Children.Add(SubItem);
+      // 递归，深度+1,往OutResult内添加数据
+      BuildStructureSpaceTreeMapInternal(SubItem, Table, CurrentDepth + 1, MaxDepth, Visited, OutResult);
+    }
+  }
 }

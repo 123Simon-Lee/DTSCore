@@ -156,9 +156,10 @@ public:
    * 因此可用于只显隐楼栋/楼层模型，而不影响设备、摄像头、管线等结构对象。
    *
    * @param bNewHidden true 隐藏，false 显示
+   * @Param Recursive 是否包括子空间
    */
   UFUNCTION(BlueprintCallable, Category = "Space")
-  void SetOrdinaryActorsHidden(bool bNewHidden);
+  void SetOrdinaryActorsHidden(bool bNewHidden, bool Recursive = false );
 
   //				Struct方法			//
 
@@ -237,6 +238,9 @@ public:
   TSet<FString> Marks;
 
 protected:
+  UPROPERTY(BlueprintReadWrite,EditDefaultsOnly)
+  USceneComponent* RootSceneComponent;
+  
   // 该空间是否有效：已经初始化且进入管理器
   UPROPERTY()
   bool bIsValid = false;

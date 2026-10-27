@@ -51,8 +51,40 @@ struct SPACESYSTEMUNIT_API FWorldSpaceStructureRow : public FTableRowBase
 #endif
 };
 
+/**
+ * 空间结构节点
+ * @details 包装 FWorldSpaceStructureRow，并持有其子空间，用于构建运行时树与 TreeView 显示
+ */
+UCLASS(BlueprintType)
+class SPACESYSTEMUNIT_API UWorldSpaceStructureNode : public UObject
+{
+	GENERATED_BODY()
+public:
+	/** 本空间对应的数据表行 */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere)
+	FWorldSpaceStructureRow Row;
+
+	/** 子空间 */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<TObjectPtr<UWorldSpaceStructureNode>> Children;
+
+	/** 父空间 */
+	UPROPERTY(BlueprintReadOnly)
+	TWeakObjectPtr<UWorldSpaceStructureNode> Parent;
+
+	/** 快捷取码，等价 Row.Code */
+	UFUNCTION(BlueprintPure, Category = "Space")
+	const FString& GetCode() const { return Row.Code; }
+
+	UFUNCTION(BlueprintPure, Category = "Space")
+	const FString& GetDisplayName() const { return Row.DisplayName; }
+};
+
 class USpacePartition;
 class ASpace;
+
+// 空间选择变化委托
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSpaceSelectionChanged, ASpace*, Space, bool, bIsSelected);
 
 /**
  * 空间子系统
@@ -125,6 +157,14 @@ public:
 	TArray<ASpace*> GetSelection() { return SelectedSpaces; }
 
 	/**
+	 * 空间选择发生变化时广播
+	 * @param Space 发生选择变化的空间
+	 * @param bIsSelected 是否被选中
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Space Subsystem")
+	FOnSpaceSelectionChanged OnSelectionChanged;
+
+	/**
 	 * 清空当前所有已选择空间，并向其发送取消选择通知
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Space Subsystem")
@@ -158,7 +198,37 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Space Subsystem")
 	void AddMultipleSelect(const TArray<ASpace*>& NewSpaces);
 
+	/**
+	 * 构建Space数据对象的遍历子树Map
+	 * @param Code      数据对象Code/根空间Code
+	 * @param Table     拥有附加关系的的表，结构必须为FWorldSpaceStructureRow
+	 * @param RootOuter 根空间的Outer
+	 * @param MaxDepth  树的最大深度 默认为32
+	 * @return 包含自身在内的所有子树对象编码指针Map
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Space Subsystem")
+	static TMap<FString, UWorldSpaceStructureNode*> BuildStructureSpaceTreeMap(
+		FString Code, const UDataTable* Table, UObject* RootOuter = nullptr, int32 MaxDepth = 32);
+
 private:
+
+	/**
+	 * 递归处理单个空间
+	 * @param Item         空间
+	 * @param Table        数据表
+	 * @param CurrentDepth 当前递归深度
+	 * @param MaxDepth     最大允许深度
+	 * @param Visited      已访问空间Code集合
+	 * @param OutResult    输出Map
+	 */
+	static void BuildStructureSpaceTreeMapInternal(
+		UWorldSpaceStructureNode* Item,
+		const UDataTable* Table,
+		int32 CurrentDepth,
+		int32 MaxDepth,
+		TSet<FString>& Visited,
+		TMap<FString, UWorldSpaceStructureNode*>& OutResult);
+
 	// 所有空间数组
 	UPROPERTY()
 	TArray<ASpace*> Spaces;

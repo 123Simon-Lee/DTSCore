@@ -332,11 +332,17 @@ TArray<ASpace *> ASpace::GetSubtreeSpaces() const
   return Result;
 }
 
-void ASpace::SetOrdinaryActorsHidden(bool bNewHidden)
+void ASpace::SetOrdinaryActorsHidden(bool bNewHidden, bool Recursive)
 {
   for (AActor *OrdinaryActor : OrdinaryActors)
   {
     SetOrdinaryActorTreeHidden(OrdinaryActor, bNewHidden);
+  }
+  // 如果包括子空间
+  if (Recursive)
+  for (ASpace* Sub : GetSubtreeSpaces())
+  {
+    Sub->SetOrdinaryActorsHidden(bNewHidden);
   }
 }
 

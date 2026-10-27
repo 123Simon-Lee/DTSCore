@@ -3,7 +3,6 @@
 #include "Core/Manager/BuildingManager.h"
 #include "Core/Component/BuildingSpaceComponent.h"
 #include "Core/Component/CampusSpaceComponent.h"
-#include "Core/DataTable/BuildingSpaceStructureRow.h"
 #include "Core/Effect/BuildingFocusIsolationComponent.h"
 #include "Core/Effect/BuildingStencilChannels.h"
 
@@ -332,21 +331,49 @@ FBuildingFloorConfig *ABuildingManager::FindConfigForBuilding(
   static const FString Context = TEXT("BuildingManager::FindConfigForBuilding");
 
   const FString Code = BuildingSpace->Code.TrimStartAndEnd();
-
-  /*
-   * 表已合并为 DT_WorldSpaceStructure（FBuildingSpaceRow）：
-   * 每个楼栋行的 BuildingConfig 就是该楼栋的拆楼配置，
-   * 不再有独立的 DT_BuildingFloorConfig / Default 回退行。
-   */
+  // 只根据Code和默认配置来检测
   if (!Code.IsEmpty())
   {
-    if (FBuildingSpaceRow *Row =
-            BuildingFloorConfigTable->FindRow<FBuildingSpaceRow>(
+    if (FBuildingFloorConfig *Row =
+            BuildingFloorConfigTable->FindRow<FBuildingFloorConfig>(
                 FName(*Code),
                 Context,
                 false))
     {
-      return &Row->BuildingConfig;
+      return Row;
+    }
+  }
+
+  // if (!DisplayName.IsEmpty())
+  //{
+  //     if (FBuildingFloorConfig* Row =
+  //         BuildingFloorConfigTable->FindRow<FBuildingFloorConfig>(
+  //             FName(*DisplayName),
+  //             Context,
+  //             false))
+  //     {
+  //         return Row;
+  //     }
+  // }
+
+  // if (FBuildingFloorConfig* Row =
+  //     BuildingFloorConfigTable->FindRow<FBuildingFloorConfig>(
+  //         FName(*BuildingSpace->GetName()),
+  //         Context,
+  //         false))
+  //{
+  //     return Row;
+  // }
+
+  if (bUseDefaultConfigRow)
+  {
+    if (FBuildingFloorConfig *Row =
+            BuildingFloorConfigTable->FindRow<FBuildingFloorConfig>(
+                DefaultConfigRowName,
+                Context,
+                false))
+    {
+      return Row;
     }
   }
 
